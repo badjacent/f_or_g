@@ -1,0 +1,12 @@
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/.env
+
+# Node
+mobile/node_modules/
+mobile/.expo/
+mobile/.env
+
+# macOS
+.DS_Store

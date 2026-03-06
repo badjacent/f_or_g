@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>F or G Debug</title>
+    <style>
+      :root {
+        --bg: #f6f4ef;
+        --card: #ffffff;
+        --ink: #1f2a35;
+        --muted: #667785;
+        --accent: #1f6ea3;
+        --line: #dde4ea;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Avenir Next", "Trebuchet MS", sans-serif;
+        background: radial-gradient(circle at 10% 10%, #fff7da, transparent 40%), var(--bg);
+        color: var(--ink);
+      }
+      .wrap {
+        max-width: 980px;
+        margin: 28px auto;
+        padding: 0 16px;
+      }
+      .top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      h1 {
+        margin: 0;
+        letter-spacing: 0.02em;
+      }
+      button {
+        border: 1px solid var(--line);
+        background: var(--card);
+        color: var(--ink);
+        padding: 8px 12px;
+        border-radius: 10px;
+        cursor: pointer;
+      }
+      button:hover { border-color: var(--accent); }
+      .card {
+        margin-top: 16px;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 14px;
+      }
+      .summary {
+        font-size: 18px;
+        font-weight: 700;
+      }
+      .routes {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+      .route-card {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 12px;
+      }
+      .route-title {
+        margin: 0 0 8px;
+        font-size: 15px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .route-text {
+        margin: 0;
+        font-size: 16px;
+      }
+      .meta {
+        margin-top: 10px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .stamp {
+        color: var(--muted);
+        font-size: 13px;
+        margin-top: 8px;
+      }
+      pre {
+        white-space: pre-wrap;
+        margin: 0;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      @media (max-width: 760px) {
+        .routes {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="top">
+        <h1>F or G Debug</h1>
+        <button id="refresh">Refresh</button>
+      </div>
+
+      <div class="card">
+        <div id="summary" class="summary">Loading...</div>
+        <div class="routes" style="margin-top: 12px;">
+          <div class="route-card">
+            <h2 class="route-title">F</h2>
+            <p id="route-f" class="route-text">--</p>
+          </div>
+          <div class="route-card">
+            <h2 class="route-title">G</h2>
+            <p id="route-g" class="route-text">--</p>
+          </div>
+        </div>
+        <div id="meta" class="meta"></div>
+        <div id="stamp" class="stamp"></div>
+      </div>
+
+      <div class="card">
+        <pre id="json">Loading...</pre>
+      </div>
+    </div>
+
+    <script>
+      const output = document.getElementById("json");
+      const stamp = document.getElementById("stamp");
+      const summary = document.getElementById("summary");
+      const routeF = document.getElementById("route-f");
+      const routeG = document.getElementById("route-g");
+      const meta = document.getElementById("meta");
+
+      function fmt(ts) {
+        if (!ts) {
+          return "--:--";
+        }
+        return new Date(ts * 1000).toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+      }
+
+      function renderRouteText(routeLabel, candidate) {
+        if (!candidate || !candidate.switchAtTs || !candidate.arriveAtTs) {
+          return `Switch to ${routeLabel} (--:--) arriving at (--:--)`;
+        }
+        return `Switch to ${routeLabel} (${fmt(candidate.switchAtTs)}) arriving at (${fmt(candidate.arriveAtTs)})`;
+      }
+
+      async function loadData() {
+        summary.textContent = "Loading...";
+        routeF.textContent = "--";
+        routeG.textContent = "--";
+        output.textContent = "Loading...";
+        meta.textContent = "";
+
+        try {
+          const res = await fetch("/api/recommendation", { cache: "no-store" });
+          const data = await res.json();
+          const candidates = data?.debugData?.routeCandidates || {};
+
+          summary.textContent = `Recommended: ${data.recommendedRoute}${data.urgencyState === "HURRY" ? " (HURRY)" : ""}`;
+          routeF.textContent = renderRouteText("F", candidates.F);
+          routeG.textContent = renderRouteText("G", candidates.G);
+          meta.textContent = `Reason: ${data.recommendationReason} | Confidence: ${data.confidenceLevel} | Freshness: ${data.dataFreshnessSeconds ?? "--"}s`;
+
+          output.textContent = JSON.stringify(data, null, 2);
+          stamp.textContent = `Last refresh: ${new Date().toLocaleTimeString()}`;
+        } catch (err) {
+          summary.textContent = "Request failed";
+          routeF.textContent = "--";
+          routeG.textContent = "--";
+          output.textContent = `Request failed: ${String(err)}`;
+          stamp.textContent = "";
+        }
+      }
+
+      document.getElementById("refresh").addEventListener("click", loadData);
+      loadData();
+    </script>
+  </body>
+</html>
