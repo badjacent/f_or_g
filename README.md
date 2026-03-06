@@ -50,3 +50,15 @@ eas submit --platform ios --profile production
 ```
 
 Before first release, set a real iOS bundle identifier in `mobile/app.json`.
+
+## 5) Lambda auto-deploy (GitHub Actions)
+
+On every push to `main` that changes `backend/**`, GitHub Actions deploys the backend package to Lambda.
+
+Set these repository secrets:
+
+- `AWS_ROLE_TO_ASSUME`: IAM role ARN for GitHub OIDC deploy
+- `AWS_REGION`: e.g. `us-east-1`
+- `LAMBDA_FUNCTION_NAME`: existing Lambda function name
+
+Lambda handler entrypoint is `lambda_handler.handler` from `backend/lambda_handler.py`.
