@@ -30,7 +30,9 @@ type RecommendationResponse = {
   debugData: Record<string, unknown>;
 };
 
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+const API_BASE_URL =
+  process.env.EXPO_PUBLIC_API_BASE_URL ??
+  (__DEV__ ? "http://localhost:8000" : "https://forg.aionyourside.net");
 const ROUTE_COLORS: Record<RecommendationResponse["recommendedRoute"], string> = {
   F: "#EB6800",
   G: "#799534",

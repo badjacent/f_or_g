@@ -1,0 +1,10 @@
+aws_region           = "us-east-1"
+project_name         = "f-or-g"
+environment          = "prod"
+lambda_function_name = "f-or-g-backend"
+
+route53_zone_name = "aionyourside.net"
+api_domain_name   = "forg.aionyourside.net"
+
+# Optional if MTA requires it in future.
+mta_api_key = ""

@@ -1,0 +1,65 @@
+name: Deploy Infra
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infra/terraform/**"
+      - ".github/workflows/deploy-infra.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform
+    env:
+      TF_VAR_aws_region: us-east-1
+      TF_VAR_mta_api_key: ${{ secrets.MTA_API_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: us-east-1
+
+      - name: Terraform fmt check
+        run: terraform fmt -check
+
+      - name: Terraform init
+        run: terraform init
+
+      - name: Terraform validate
+        run: terraform validate
+
+      - name: Terraform plan
+        run: terraform plan -out=tfplan
+
+      - name: Terraform apply
+        if: github.ref == 'refs/heads/main'
+        run: terraform apply -auto-approve tfplan
+
+      - name: Export outputs
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo "API_BASE_URL=$(terraform output -raw api_base_url)" >> "$GITHUB_ENV"
+          echo "LAMBDA_FUNCTION_NAME=$(terraform output -raw lambda_function_name)" >> "$GITHUB_ENV"
+
+      - name: Summary
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo "Infra deployed." >> "$GITHUB_STEP_SUMMARY"
+          echo "API base URL: $API_BASE_URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "Lambda function: $LAMBDA_FUNCTION_NAME" >> "$GITHUB_STEP_SUMMARY"
