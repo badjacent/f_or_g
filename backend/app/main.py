@@ -212,9 +212,12 @@ def _select_candidate(route: str, predictions: list[TripPrediction], now: int) -
     )
 
 
-def _candidate_debug(route: str, candidate: RouteCandidate) -> dict[str, Any]:
+def _candidate_debug(route: str, candidate: RouteCandidate, now: int) -> dict[str, Any]:
+    rider_ready_ts = now + candidate.transfer_overhead_seconds
     return {
         "route": route,
+        "transferOverheadSeconds": candidate.transfer_overhead_seconds,
+        "riderReadyAtTs": rider_ready_ts,
         "switchAtTs": candidate.boarding_arrival_ts,
         "arriveAtTs": candidate.destination_arrival_ts,
         "switchStopId": candidate.boarding_stop_id,
@@ -235,7 +238,7 @@ def _summary_text(
         return "F and G are close. Take F."
     if reason == RecommendationReason.FASTEST_TIGHT_TRANSFER:
         if urgency == UrgencyState.HURRY:
-            return f"Take {recommended_route} now. Transfer is tight."
+            return f"Take {recommended_route}. Transfer is tight."
         return f"Take {recommended_route}. It is still fastest."
     if reason == RecommendationReason.LOW_CONFIDENCE:
         return f"Take {recommended_route}, but confidence is low."
@@ -325,8 +328,8 @@ def _build_recommendation() -> dict[str, Any]:
                     "G": candidate_g.transfer_margin_seconds,
                 },
                 "routeCandidates": {
-                    "F": _candidate_debug("F", candidate_f),
-                    "G": _candidate_debug("G", candidate_g),
+                    "F": _candidate_debug("F", candidate_f, now),
+                    "G": _candidate_debug("G", candidate_g, now),
                 },
                 "winningRoute": "?",
                 "recommendationReason": RecommendationReason.DATA_UNAVAILABLE,
@@ -425,8 +428,8 @@ def _build_recommendation() -> dict[str, Any]:
                 "G": candidate_g.transfer_margin_seconds,
             },
             "routeCandidates": {
-                "F": _candidate_debug("F", candidate_f),
-                "G": _candidate_debug("G", candidate_g),
+                "F": _candidate_debug("F", candidate_f, now),
+                "G": _candidate_debug("G", candidate_g, now),
             },
             "destinationStopId": DESTINATION_STOP_ID,
             "winningRoute": winning.route,
