@@ -133,11 +133,41 @@ terraform plan
 terraform apply
 ```
 
+Before first Terraform run, bootstrap remote state (one-time):
+
+```bash
+cd infra/terraform
+./bootstrap_backend.sh
+terraform init -reconfigure
+```
+
+This creates:
+
+- S3 state bucket: `f-or-g-terraform-state-355854622119`
+- DynamoDB lock table: `f-or-g-terraform-locks`
+
+If previous failed applies already created resources, import them once:
+
+```bash
+cd infra/terraform
+terraform init -reconfigure
+terraform import aws_iam_role.lambda_exec f-or-g-prod-lambda-role
+terraform import aws_apigatewayv2_domain_name.api forg.aionyourside.net
+```
+
+Then run:
+
+```bash
+terraform plan
+terraform apply
+```
+
 CI apply:
 
 - Workflow: `.github/workflows/deploy-infra.yml`
 - Triggers on pushes to `main` touching `infra/terraform/**`
 - Uses GitHub OIDC role (`AWS_ROLE_TO_ASSUME`)
+- Uses remote S3 state + DynamoDB lock (configured in `infra/terraform/backend.tf`)
 
 IAM trust policy for `AWS_ROLE_TO_ASSUME` (copy/paste):
 
