@@ -13,3 +13,11 @@ mobile/.env
 
 **/__pycache__/
 *.pyc
+
+# Terraform local artifacts
+infra/terraform/.terraform/
+infra/terraform/build/
+
+# Terraform local artifacts
+infra/terraform/.terraform/
+infra/terraform/build/
