@@ -33,6 +33,7 @@ type RecommendationResponse = {
 type RouteCandidateDebug = {
   switchStopId?: string | null;
   transferMarginSeconds?: number | null;
+  switchAtTs?: number | null;
 };
 
 const API_BASE_URL =
@@ -63,6 +64,16 @@ function toSwitchWindow(seconds: number | null | undefined): string {
     return "<1m";
   }
   return `${Math.floor(seconds / 60)}m`;
+}
+
+function toClock(ts: number | null | undefined): string {
+  if (!ts) {
+    return "--:--";
+  }
+  return new Date(ts * 1000).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 function readRouteCandidate(
@@ -135,6 +146,21 @@ export default function App() {
     ? SWITCH_STOP_NAMES[switchStopId] ?? switchStopId
     : "Unknown switch point";
   const switchWindow = toSwitchWindow(recommendedCandidate?.transferMarginSeconds ?? null);
+  const candidateF = recommendation
+    ? readRouteCandidate(recommendation.debugData, "F")
+    : null;
+  const candidateG = recommendation
+    ? readRouteCandidate(recommendation.debugData, "G")
+    : null;
+  const acReference =
+    recommendation &&
+    recommendation.debugData["acReference"] &&
+    typeof recommendation.debugData["acReference"] === "object"
+      ? (recommendation.debugData["acReference"] as {
+          jayTs?: number | null;
+          hoytTs?: number | null;
+        })
+      : null;
 
   return (
     <SafeAreaView style={styles.root}>
@@ -169,6 +195,10 @@ export default function App() {
             <Text style={styles.timeToCarroll}>
               Time to Carroll: F {toMinutes(recommendation.etaF)} / G{" "}
               {toMinutes(recommendation.etaG)}
+            </Text>
+            <Text style={styles.transferTimingLine}>
+              A @ Jay {toClock(acReference?.jayTs)} to next F {toClock(candidateF?.switchAtTs)}{" "}
+              | A @ Hoyt {toClock(acReference?.hoytTs)} to next G {toClock(candidateG?.switchAtTs)}
             </Text>
 
             {recommendation.recommendedRoute !== "?" ? (
@@ -266,6 +296,13 @@ const styles = StyleSheet.create({
     color: "#3f5365",
     textAlign: "center",
     maxWidth: 340,
+  },
+  transferTimingLine: {
+    fontSize: 13,
+    color: "#556676",
+    textAlign: "center",
+    maxWidth: 360,
+    lineHeight: 18,
   },
   footer: {
     alignItems: "center",

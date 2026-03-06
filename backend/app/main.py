@@ -51,6 +51,7 @@ class ParsedFeed:
     fetched_at: int
     feed_ts: int
     predictions: list[TripPrediction]
+    ac_windows: list[tuple[int, int]]
 
 
 @dataclass
@@ -85,6 +86,10 @@ MTA_FEED_URLS = [
     if url.strip()
 ]
 MTA_API_KEY = os.getenv("MTA_API_KEY", "")
+MTA_A_C_FEED_URL = os.getenv(
+    "MTA_A_C_FEED_URL",
+    "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-ace",
+)
 
 BOARDING_STOP_IDS_F = {
     stop.strip()
@@ -97,6 +102,8 @@ BOARDING_STOP_IDS_G = {
     if stop.strip()
 }
 DESTINATION_STOP_ID = os.getenv("MTA_DESTINATION_STOP_ID", "F21S").strip() or None
+AC_JAY_STOP_ID = os.getenv("MTA_AC_JAY_STOP_ID", "A41S").strip() or "A41S"
+AC_HOYT_STOP_ID = os.getenv("MTA_AC_HOYT_STOP_ID", "A42S").strip() or "A42S"
 
 _feed_cache: ParsedFeed | None = None
 
@@ -111,6 +118,7 @@ def _fetch_feed() -> ParsedFeed:
     headers = {"x-api-key": MTA_API_KEY} if MTA_API_KEY else {}
     feed_ts_values: list[int] = []
     predictions: list[TripPrediction] = []
+    ac_windows: list[tuple[int, int]] = []
 
     for feed_url in MTA_FEED_URLS:
         response = requests.get(feed_url, headers=headers, timeout=4)
@@ -167,15 +175,53 @@ def _fetch_feed() -> ParsedFeed:
                 )
             )
 
+    response = requests.get(MTA_A_C_FEED_URL, headers=headers, timeout=4)
+    response.raise_for_status()
+    ac_feed = gtfs_realtime_pb2.FeedMessage()
+    ac_feed.ParseFromString(response.content)
+    feed_ts_values.append(int(ac_feed.header.timestamp) if ac_feed.header.timestamp else now)
+
+    for entity in ac_feed.entity:
+        if not entity.HasField("trip_update"):
+            continue
+        trip_update = entity.trip_update
+        if trip_update.trip.route_id not in {"A", "C"}:
+            continue
+
+        jay_ts: int | None = None
+        hoyt_ts: int | None = None
+        for stop_update in trip_update.stop_time_update:
+            if not stop_update.arrival.time:
+                continue
+            arrival_ts = int(stop_update.arrival.time)
+            if arrival_ts < now - 60:
+                continue
+            if stop_update.stop_id == AC_JAY_STOP_ID:
+                jay_ts = arrival_ts
+            elif stop_update.stop_id == AC_HOYT_STOP_ID:
+                hoyt_ts = arrival_ts
+
+        if jay_ts is not None and hoyt_ts is not None and hoyt_ts >= jay_ts and jay_ts >= now:
+            ac_windows.append((jay_ts, hoyt_ts))
+
     feed_ts = min(feed_ts_values) if feed_ts_values else now
-    parsed = ParsedFeed(fetched_at=now, feed_ts=feed_ts, predictions=predictions)
+    parsed = ParsedFeed(
+        fetched_at=now,
+        feed_ts=feed_ts,
+        predictions=predictions,
+        ac_windows=sorted(ac_windows, key=lambda pair: pair[0]),
+    )
     _feed_cache = parsed
     return parsed
 
 
-def _select_candidate(route: str, predictions: list[TripPrediction], now: int) -> RouteCandidate:
+def _select_candidate(
+    route: str,
+    predictions: list[TripPrediction],
+    now: int,
+    rider_ready_ts: int,
+) -> RouteCandidate:
     overhead = TRANSFER_OVERHEAD_SECONDS[route]
-    rider_ready_ts = now + overhead
 
     eligible = [
         prediction
@@ -212,8 +258,7 @@ def _select_candidate(route: str, predictions: list[TripPrediction], now: int) -
     )
 
 
-def _candidate_debug(route: str, candidate: RouteCandidate, now: int) -> dict[str, Any]:
-    rider_ready_ts = now + candidate.transfer_overhead_seconds
+def _candidate_debug(route: str, candidate: RouteCandidate, rider_ready_ts: int) -> dict[str, Any]:
     return {
         "route": route,
         "transferOverheadSeconds": candidate.transfer_overhead_seconds,
@@ -291,6 +336,7 @@ def _build_recommendation() -> dict[str, Any]:
                 "etaG": None,
                 "transferMargins": {"F": None, "G": None},
                 "routeCandidates": {"F": None, "G": None},
+                "acReference": {"jayTs": None, "hoytTs": None},
                 "winningRoute": "?",
                 "recommendationReason": RecommendationReason.DATA_UNAVAILABLE,
                 "urgencyState": UrgencyState.NORMAL,
@@ -310,9 +356,19 @@ def _build_recommendation() -> dict[str, Any]:
         }
 
     data_freshness = max(0, now - parsed.feed_ts)
+    ac_window = parsed.ac_windows[0] if parsed.ac_windows else None
+    ac_jay_ts = ac_window[0] if ac_window else None
+    ac_hoyt_ts = ac_window[1] if ac_window else None
 
-    candidate_f = _select_candidate("F", parsed.predictions, now)
-    candidate_g = _select_candidate("G", parsed.predictions, now)
+    rider_ready_f_ts = ac_jay_ts if ac_jay_ts is not None else now
+    rider_ready_g_ts = (
+        ac_hoyt_ts + TRANSFER_OVERHEAD_SECONDS["G"]
+        if ac_hoyt_ts is not None
+        else now + TRANSFER_OVERHEAD_SECONDS["G"]
+    )
+
+    candidate_f = _select_candidate("F", parsed.predictions, now, rider_ready_f_ts)
+    candidate_g = _select_candidate("G", parsed.predictions, now, rider_ready_g_ts)
 
     eta_f = candidate_f.eta_seconds
     eta_g = candidate_g.eta_seconds
@@ -328,9 +384,10 @@ def _build_recommendation() -> dict[str, Any]:
                     "G": candidate_g.transfer_margin_seconds,
                 },
                 "routeCandidates": {
-                    "F": _candidate_debug("F", candidate_f, now),
-                    "G": _candidate_debug("G", candidate_g, now),
+                    "F": _candidate_debug("F", candidate_f, rider_ready_f_ts),
+                    "G": _candidate_debug("G", candidate_g, rider_ready_g_ts),
                 },
+                "acReference": {"jayTs": ac_jay_ts, "hoytTs": ac_hoyt_ts},
                 "winningRoute": "?",
                 "recommendationReason": RecommendationReason.DATA_UNAVAILABLE,
                 "urgencyState": UrgencyState.NORMAL,
@@ -428,9 +485,10 @@ def _build_recommendation() -> dict[str, Any]:
                 "G": candidate_g.transfer_margin_seconds,
             },
             "routeCandidates": {
-                "F": _candidate_debug("F", candidate_f, now),
-                "G": _candidate_debug("G", candidate_g, now),
+                "F": _candidate_debug("F", candidate_f, rider_ready_f_ts),
+                "G": _candidate_debug("G", candidate_g, rider_ready_g_ts),
             },
+            "acReference": {"jayTs": ac_jay_ts, "hoytTs": ac_hoyt_ts},
             "destinationStopId": DESTINATION_STOP_ID,
             "winningRoute": winning.route,
             "recommendationReason": reason,
