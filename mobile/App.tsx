@@ -30,6 +30,11 @@ type RecommendationResponse = {
   debugData: Record<string, unknown>;
 };
 
+type RouteCandidateDebug = {
+  switchStopId?: string | null;
+  transferMarginSeconds?: number | null;
+};
+
 const API_BASE_URL =
   process.env.EXPO_PUBLIC_API_BASE_URL ??
   (__DEV__ ? "http://localhost:8000" : "https://forg.aionyourside.net");
@@ -38,12 +43,41 @@ const ROUTE_COLORS: Record<RecommendationResponse["recommendedRoute"], string> =
   G: "#799534",
   "?": "#0062CF",
 };
+const SWITCH_STOP_NAMES: Record<string, string> = {
+  A41S: "Jay St-MetroTech",
+  A42S: "Hoyt-Schermerhorn",
+};
 
 function toMinutes(seconds: number | null): string {
   if (seconds == null) {
     return "--";
   }
   return `${Math.max(0, Math.round(seconds / 60))}m`;
+}
+
+function toSwitchWindow(seconds: number | null | undefined): string {
+  if (seconds == null) {
+    return "--";
+  }
+  if (seconds < 60) {
+    return "<1m";
+  }
+  return `${Math.floor(seconds / 60)}m`;
+}
+
+function readRouteCandidate(
+  debugData: Record<string, unknown>,
+  route: "F" | "G",
+): RouteCandidateDebug | null {
+  const routeCandidates = debugData["routeCandidates"];
+  if (!routeCandidates || typeof routeCandidates !== "object") {
+    return null;
+  }
+  const candidate = (routeCandidates as Record<string, unknown>)[route];
+  if (!candidate || typeof candidate !== "object") {
+    return null;
+  }
+  return candidate as RouteCandidateDebug;
 }
 
 export default function App() {
@@ -92,6 +126,15 @@ export default function App() {
   const routeColor = recommendation
     ? ROUTE_COLORS[recommendation.recommendedRoute]
     : "#0062CF";
+  const recommendedCandidate =
+    recommendation && recommendation.recommendedRoute !== "?"
+      ? readRouteCandidate(recommendation.debugData, recommendation.recommendedRoute)
+      : null;
+  const switchStopId = recommendedCandidate?.switchStopId ?? null;
+  const switchStopName = switchStopId
+    ? SWITCH_STOP_NAMES[switchStopId] ?? switchStopId
+    : "Unknown switch point";
+  const switchWindow = toSwitchWindow(recommendedCandidate?.transferMarginSeconds ?? null);
 
   return (
     <SafeAreaView style={styles.root}>
@@ -123,10 +166,17 @@ export default function App() {
             {urgencyLabel ? <Text style={styles.hurry}>{urgencyLabel}</Text> : null}
             <Text style={styles.summary}>{recommendation.summaryText}</Text>
 
-            <View style={styles.etasRow}>
-              <Text style={styles.etaText}>F {toMinutes(recommendation.etaF)}</Text>
-              <Text style={styles.etaText}>G {toMinutes(recommendation.etaG)}</Text>
-            </View>
+            <Text style={styles.timeToCarroll}>
+              Time to Carroll: F {toMinutes(recommendation.etaF)} / G{" "}
+              {toMinutes(recommendation.etaG)}
+            </Text>
+
+            {recommendation.recommendedRoute !== "?" ? (
+              <Text style={styles.switchText}>
+                Switch at {switchStopName}. You have {switchWindow} before the{" "}
+                {recommendation.recommendedRoute} arrives.
+              </Text>
+            ) : null}
 
             {showDebug ? (
               <View style={styles.debugBox}>
@@ -204,15 +254,18 @@ const styles = StyleSheet.create({
     color: "#647383",
     textAlign: "center",
   },
-  etasRow: {
+  timeToCarroll: {
     marginTop: 6,
-    flexDirection: "row",
-    gap: 16,
-  },
-  etaText: {
     fontSize: 18,
     fontWeight: "700",
     color: "#194f76",
+    textAlign: "center",
+  },
+  switchText: {
+    fontSize: 15,
+    color: "#3f5365",
+    textAlign: "center",
+    maxWidth: 340,
   },
   footer: {
     alignItems: "center",
