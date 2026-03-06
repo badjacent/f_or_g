@@ -43,6 +43,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt -t backend/build/package
           cp -R backend/app backend/build/package/app
+          cp -R backend/static backend/build/package/static
           cp backend/lambda_handler.py backend/build/package/lambda_handler.py
           cd backend/build/package
           zip -r ../function.zip .
