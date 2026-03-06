@@ -57,8 +57,8 @@ resource "aws_lambda_function" "backend" {
 
   environment {
     variables = {
-      MTA_FEED_URLS          = var.mta_feed_urls
-      MTA_API_KEY            = var.mta_api_key
+      MTA_FEED_URLS           = var.mta_feed_urls
+      MTA_API_KEY             = var.mta_api_key
       MTA_BOARDING_STOP_IDS_F = var.mta_boarding_stop_ids_f
       MTA_BOARDING_STOP_IDS_G = var.mta_boarding_stop_ids_g
       MTA_DESTINATION_STOP_ID = var.mta_destination_stop_id
