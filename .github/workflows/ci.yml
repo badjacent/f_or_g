@@ -17,7 +17,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt
-          python -m py_compile backend/app/main.py backend/scripts/check_feed_coverage.py backend/lambda_handler.py
+          python -m py_compile backend/app/main.py backend/app/models.py backend/app/feeds/client.py backend/app/engine/decision.py backend/app/scenarios/base.py backend/app/scenarios/f_or_g.py backend/scripts/check_feed_coverage.py backend/lambda_handler.py
 
   mobile:
     runs-on: ubuntu-latest

@@ -2,513 +2,146 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass
-from enum import Enum
 from typing import Any
 
-import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
-from google.transit import gtfs_realtime_pb2
 
+from app.engine.decision import DecisionResult, decide
+from app.feeds.client import FeedClient
+from app.models import (
+    ConfidenceLevel,
+    RecommendationReason,
+    RouteCandidate,
+    UrgencyState,
+)
+from app.scenarios.f_or_g import FOrGScenario
 
 load_dotenv()
-
-
-class RecommendationReason(str, Enum):
-    FASTEST_CLEAR = "FASTEST_CLEAR"
-    FASTEST_TIGHT_TRANSFER = "FASTEST_TIGHT_TRANSFER"
-    ABOUT_THE_SAME_PREFER_EASIER = "ABOUT_THE_SAME_PREFER_EASIER"
-    LOW_CONFIDENCE = "LOW_CONFIDENCE"
-    DATA_UNAVAILABLE = "DATA_UNAVAILABLE"
-
-
-class UrgencyState(str, Enum):
-    NORMAL = "NORMAL"
-    HURRY = "HURRY"
-
-
-class ConfidenceLevel(str, Enum):
-    HIGH = "HIGH"
-    MEDIUM = "MEDIUM"
-    LOW = "LOW"
-    DATA_UNAVAILABLE = "DATA_UNAVAILABLE"
-
-
-@dataclass
-class TripPrediction:
-    route_id: str
-    trip_id: str
-    boarding_stop_id: str
-    boarding_arrival_ts: int
-    destination_arrival_ts: int | None
-
-
-@dataclass
-class ParsedFeed:
-    fetched_at: int
-    feed_ts: int
-    predictions: list[TripPrediction]
-    ac_windows: list[tuple[int, int]]
-
-
-@dataclass
-class RouteCandidate:
-    route: str
-    transfer_overhead_seconds: int
-    boarding_stop_id: str | None
-    boarding_arrival_ts: int | None
-    destination_arrival_ts: int | None
-    eta_seconds: int | None
-    transfer_margin_seconds: int | None
-
-
-TRANSFER_OVERHEAD_SECONDS = {
-    "F": 0,
-    "G": 90,
-}
 
 MAX_FEED_AGE_SECONDS = int(os.getenv("MAX_FEED_AGE_SECONDS", "60"))
 TIE_WINDOW_SECONDS = int(os.getenv("TIE_WINDOW_SECONDS", "60"))
 FEED_CACHE_SECONDS = int(os.getenv("FEED_CACHE_SECONDS", "20"))
-
-MTA_FEED_URLS = [
-    url.strip()
-    for url in os.getenv(
-        "MTA_FEED_URLS",
-        (
-            "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm,"
-            "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-g"
-        ),
-    ).split(",")
-    if url.strip()
-]
 MTA_API_KEY = os.getenv("MTA_API_KEY", "")
-MTA_A_C_FEED_URL = os.getenv(
-    "MTA_A_C_FEED_URL",
-    "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-ace",
-)
 
-BOARDING_STOP_IDS_F = {
-    stop.strip()
-    for stop in os.getenv("MTA_BOARDING_STOP_IDS_F", "A41S").split(",")
-    if stop.strip()
-}
-BOARDING_STOP_IDS_G = {
-    stop.strip()
-    for stop in os.getenv("MTA_BOARDING_STOP_IDS_G", "A42S").split(",")
-    if stop.strip()
-}
-DESTINATION_STOP_ID = os.getenv("MTA_DESTINATION_STOP_ID", "F21S").strip() or None
-AC_JAY_STOP_ID = os.getenv("MTA_AC_JAY_STOP_ID", "A41S").strip() or "A41S"
-AC_HOYT_STOP_ID = os.getenv("MTA_AC_HOYT_STOP_ID", "A42S").strip() or "A42S"
-
-_feed_cache: ParsedFeed | None = None
+scenario = FOrGScenario()
+feed_client = FeedClient(api_key=MTA_API_KEY, cache_seconds=FEED_CACHE_SECONDS)
 
 
-def _fetch_feed() -> ParsedFeed:
-    global _feed_cache
-
-    now = int(time.time())
-    if _feed_cache and (now - _feed_cache.fetched_at) <= FEED_CACHE_SECONDS:
-        return _feed_cache
-
-    headers = {"x-api-key": MTA_API_KEY} if MTA_API_KEY else {}
-    feed_ts_values: list[int] = []
-    predictions: list[TripPrediction] = []
-    ac_windows: list[tuple[int, int]] = []
-
-    for feed_url in MTA_FEED_URLS:
-        response = requests.get(feed_url, headers=headers, timeout=4)
-        response.raise_for_status()
-
-        feed = gtfs_realtime_pb2.FeedMessage()
-        feed.ParseFromString(response.content)
-        feed_ts_values.append(int(feed.header.timestamp) if feed.header.timestamp else now)
-
-        for entity in feed.entity:
-            if not entity.HasField("trip_update"):
-                continue
-
-            trip_update = entity.trip_update
-            trip = trip_update.trip
-            route_id = trip.route_id
-            if route_id not in {"F", "G"}:
-                continue
-
-            allowed_boarding = BOARDING_STOP_IDS_F if route_id == "F" else BOARDING_STOP_IDS_G
-            if not allowed_boarding:
-                continue
-
-            trip_id = trip.trip_id or entity.id or f"{route_id}-unknown"
-            boarding_options: list[tuple[int, str]] = []
-            destination_arrival: int | None = None
-
-            for stop_update in trip_update.stop_time_update:
-                if not stop_update.arrival.time:
-                    continue
-
-                arrival_ts = int(stop_update.arrival.time)
-                if arrival_ts < now - 60:
-                    continue
-
-                if stop_update.stop_id in allowed_boarding:
-                    boarding_options.append((arrival_ts, stop_update.stop_id))
-
-                if DESTINATION_STOP_ID and stop_update.stop_id == DESTINATION_STOP_ID:
-                    if destination_arrival is None or arrival_ts < destination_arrival:
-                        destination_arrival = arrival_ts
-
-            if not boarding_options:
-                continue
-
-            boarding_arrival_ts, boarding_stop_id = min(boarding_options, key=lambda pair: pair[0])
-            predictions.append(
-                TripPrediction(
-                    route_id=route_id,
-                    trip_id=trip_id,
-                    boarding_stop_id=boarding_stop_id,
-                    boarding_arrival_ts=boarding_arrival_ts,
-                    destination_arrival_ts=destination_arrival,
-                )
-            )
-
-    response = requests.get(MTA_A_C_FEED_URL, headers=headers, timeout=4)
-    response.raise_for_status()
-    ac_feed = gtfs_realtime_pb2.FeedMessage()
-    ac_feed.ParseFromString(response.content)
-    feed_ts_values.append(int(ac_feed.header.timestamp) if ac_feed.header.timestamp else now)
-
-    for entity in ac_feed.entity:
-        if not entity.HasField("trip_update"):
-            continue
-        trip_update = entity.trip_update
-        if trip_update.trip.route_id not in {"A", "C"}:
-            continue
-
-        jay_ts: int | None = None
-        hoyt_ts: int | None = None
-        for stop_update in trip_update.stop_time_update:
-            if not stop_update.arrival.time:
-                continue
-            arrival_ts = int(stop_update.arrival.time)
-            if arrival_ts < now - 60:
-                continue
-            if stop_update.stop_id == AC_JAY_STOP_ID:
-                jay_ts = arrival_ts
-            elif stop_update.stop_id == AC_HOYT_STOP_ID:
-                hoyt_ts = arrival_ts
-
-        if jay_ts is not None and hoyt_ts is not None and hoyt_ts >= jay_ts and jay_ts >= now:
-            ac_windows.append((jay_ts, hoyt_ts))
-
-    feed_ts = min(feed_ts_values) if feed_ts_values else now
-    parsed = ParsedFeed(
-        fetched_at=now,
-        feed_ts=feed_ts,
-        predictions=predictions,
-        ac_windows=sorted(ac_windows, key=lambda pair: pair[0]),
-    )
-    _feed_cache = parsed
-    return parsed
-
-
-def _select_candidate(
-    route: str,
-    predictions: list[TripPrediction],
-    now: int,
-    rider_ready_ts: int,
-) -> RouteCandidate:
-    overhead = TRANSFER_OVERHEAD_SECONDS[route]
-
-    eligible = [
-        prediction
-        for prediction in predictions
-        if prediction.route_id == route
-        and prediction.boarding_arrival_ts >= rider_ready_ts
-        and prediction.destination_arrival_ts is not None
-        and prediction.destination_arrival_ts >= prediction.boarding_arrival_ts
-    ]
-    eligible.sort(
-        key=lambda prediction: (
-            prediction.destination_arrival_ts or 0,
-            prediction.boarding_arrival_ts,
-        )
-    )
-
-    best_trip = eligible[0] if eligible else None
-    destination_arrival_ts = best_trip.destination_arrival_ts if best_trip else None
-
-    # Score by destination ETA only; transfer time is a catchability gate.
-    eta_seconds = (destination_arrival_ts - now) if destination_arrival_ts is not None else None
-    transfer_margin = (
-        (best_trip.boarding_arrival_ts - rider_ready_ts) if best_trip else None
-    )
-
-    return RouteCandidate(
-        route=route,
-        transfer_overhead_seconds=overhead,
-        boarding_stop_id=(best_trip.boarding_stop_id if best_trip else None),
-        boarding_arrival_ts=(best_trip.boarding_arrival_ts if best_trip else None),
-        destination_arrival_ts=destination_arrival_ts,
-        eta_seconds=eta_seconds,
-        transfer_margin_seconds=transfer_margin,
-    )
-
-
-def _candidate_debug(route: str, candidate: RouteCandidate, rider_ready_ts: int) -> dict[str, Any]:
-    return {
-        "route": route,
-        "transferOverheadSeconds": candidate.transfer_overhead_seconds,
-        "riderReadyAtTs": rider_ready_ts,
-        "switchAtTs": candidate.boarding_arrival_ts,
-        "arriveAtTs": candidate.destination_arrival_ts,
-        "switchStopId": candidate.boarding_stop_id,
-        "destinationStopId": DESTINATION_STOP_ID,
-        "etaToDestinationSeconds": candidate.eta_seconds,
-        "transferMarginSeconds": candidate.transfer_margin_seconds,
-    }
-
-
-def _summary_text(
-    recommended_route: str,
-    reason: RecommendationReason,
-    urgency: UrgencyState,
-) -> str:
-    if reason == RecommendationReason.DATA_UNAVAILABLE:
-        return "No signal. Pull to refresh."
-    if reason == RecommendationReason.ABOUT_THE_SAME_PREFER_EASIER:
-        return "F and G are close. Take F."
-    if reason == RecommendationReason.FASTEST_TIGHT_TRANSFER:
-        if urgency == UrgencyState.HURRY:
-            return f"Take {recommended_route}. Transfer is tight."
-        return f"Take {recommended_route}. It is still fastest."
-    if reason == RecommendationReason.LOW_CONFIDENCE:
-        return f"Take {recommended_route}, but confidence is low."
-    return f"Take {recommended_route}. It is clearly faster."
-
-
-def _confidence_level(
-    data_freshness_seconds: int,
-    has_both_etas: bool,
-    eta_gap_seconds: int | None,
-    winner_transfer_margin_seconds: int | None,
-    tie_used: bool,
-) -> ConfidenceLevel:
-    if not has_both_etas:
-        return ConfidenceLevel.LOW
-    if data_freshness_seconds > MAX_FEED_AGE_SECONDS:
-        return ConfidenceLevel.LOW
-    if tie_used:
-        return ConfidenceLevel.LOW
-
-    tight_transfer = (
-        winner_transfer_margin_seconds is not None and winner_transfer_margin_seconds < 90
-    )
-    if tight_transfer or (eta_gap_seconds is not None and eta_gap_seconds <= 60):
-        return ConfidenceLevel.MEDIUM
-    if eta_gap_seconds is not None and eta_gap_seconds > 60:
-        return ConfidenceLevel.HIGH
-    return ConfidenceLevel.MEDIUM
-
-
-def _debug_payload_base(now: int, feed_ts: int | None, freshness: int | None) -> dict[str, Any]:
-    return {
-        "decisionTimestamp": now,
-        "feedTimestamp": feed_ts,
-        "dataFreshnessSeconds": freshness,
-        "destinationStopId": DESTINATION_STOP_ID,
-    }
+def _uncertainty_note(
+    result: DecisionResult | None,
+    candidate_a: RouteCandidate,
+    candidate_b: RouteCandidate,
+    data_freshness: int,
+) -> str | None:
+    if result is None:
+        return "No train timing data available."
+    if result.confidence in (ConfidenceLevel.HIGH, ConfidenceLevel.MEDIUM):
+        return None
+    # LOW confidence — explain why
+    if result.reason == RecommendationReason.ABOUT_THE_SAME_PREFER_EASIER:
+        return None  # Close call, not real uncertainty
+    if candidate_a.eta_seconds is None or candidate_b.eta_seconds is None:
+        missing = candidate_a.route if candidate_a.eta_seconds is None else candidate_b.route
+        return f"No upcoming {missing} trains found."
+    if data_freshness > MAX_FEED_AGE_SECONDS:
+        return f"Train data is {data_freshness}s old and may be outdated."
+    return "Limited confidence in this recommendation."
 
 
 def _build_recommendation() -> dict[str, Any]:
     now = int(time.time())
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
 
     try:
-        parsed = _fetch_feed()
+        snapshot = feed_client.fetch(scenario.feed_urls)
     except Exception:
-        base = _debug_payload_base(now, None, None)
-        base.update(
-            {
-                "etaF": None,
-                "etaG": None,
-                "transferMargins": {"F": None, "G": None},
-                "routeCandidates": {"F": None, "G": None},
-                "acReference": {"jayTs": None, "hoytTs": None},
-                "winningRoute": "?",
-                "recommendationReason": RecommendationReason.DATA_UNAVAILABLE,
-                "urgencyState": UrgencyState.NORMAL,
-                "confidenceLevel": ConfidenceLevel.DATA_UNAVAILABLE,
-            }
-        )
+        debug = {
+            "decisionTimestamp": now,
+            "feedTimestamp": None,
+            "dataFreshnessSeconds": None,
+        }
         return {
             "recommendedRoute": "?",
             "urgencyState": UrgencyState.NORMAL,
             "recommendationReason": RecommendationReason.DATA_UNAVAILABLE,
             "summaryText": "No signal.",
+            "narrativeText": None,
+            "uncertaintyNote": "Could not reach train data feeds.",
             "etaF": None,
             "etaG": None,
             "confidenceLevel": ConfidenceLevel.DATA_UNAVAILABLE,
             "dataFreshnessSeconds": None,
-            "debugData": base,
+            "serverTimeEpochSeconds": now,
+            "serverTimeIsoUtc": now_iso,
+            "debugData": debug,
         }
 
-    data_freshness = max(0, now - parsed.feed_ts)
-    ac_window = parsed.ac_windows[0] if parsed.ac_windows else None
-    ac_jay_ts = ac_window[0] if ac_window else None
-    ac_hoyt_ts = ac_window[1] if ac_window else None
+    data_freshness = max(0, now - snapshot.feed_ts)
+    candidate_a, candidate_b = scenario.extract_candidates(snapshot, now)
 
-    rider_ready_f_ts = ac_jay_ts if ac_jay_ts is not None else now
-    rider_ready_g_ts = (
-        ac_hoyt_ts + TRANSFER_OVERHEAD_SECONDS["G"]
-        if ac_hoyt_ts is not None
-        else now + TRANSFER_OVERHEAD_SECONDS["G"]
+    result = decide(
+        candidate_a,
+        candidate_b,
+        tie_winner_route=scenario.tie_winner,
+        tie_window_seconds=TIE_WINDOW_SECONDS,
+        max_feed_age_seconds=MAX_FEED_AGE_SECONDS,
+        data_freshness_seconds=data_freshness,
     )
 
-    candidate_f = _select_candidate("F", parsed.predictions, now, rider_ready_f_ts)
-    candidate_g = _select_candidate("G", parsed.predictions, now, rider_ready_g_ts)
+    extras = scenario.response_extras(candidate_a, candidate_b)
+    scenario_debug = scenario.debug_data(
+        candidate_a, candidate_b, result, snapshot, now
+    )
 
-    eta_f = candidate_f.eta_seconds
-    eta_g = candidate_g.eta_seconds
+    debug = {
+        "decisionTimestamp": now,
+        "feedTimestamp": snapshot.feed_ts,
+        "dataFreshnessSeconds": data_freshness,
+    }
+    debug.update(scenario_debug)
 
-    if eta_f is None and eta_g is None:
-        base = _debug_payload_base(now, parsed.feed_ts, data_freshness)
-        base.update(
-            {
-                "etaF": None,
-                "etaG": None,
-                "transferMargins": {
-                    "F": candidate_f.transfer_margin_seconds,
-                    "G": candidate_g.transfer_margin_seconds,
-                },
-                "routeCandidates": {
-                    "F": _candidate_debug("F", candidate_f, rider_ready_f_ts),
-                    "G": _candidate_debug("G", candidate_g, rider_ready_g_ts),
-                },
-                "acReference": {"jayTs": ac_jay_ts, "hoytTs": ac_hoyt_ts},
-                "winningRoute": "?",
-                "recommendationReason": RecommendationReason.DATA_UNAVAILABLE,
-                "urgencyState": UrgencyState.NORMAL,
-                "confidenceLevel": ConfidenceLevel.DATA_UNAVAILABLE,
-            }
-        )
+    uncertainty = _uncertainty_note(result, candidate_a, candidate_b, data_freshness)
+
+    if result is None:
         return {
             "recommendedRoute": "?",
             "urgencyState": UrgencyState.NORMAL,
             "recommendationReason": RecommendationReason.DATA_UNAVAILABLE,
             "summaryText": "No signal.",
-            "etaF": None,
-            "etaG": None,
+            "narrativeText": None,
+            "uncertaintyNote": uncertainty,
             "confidenceLevel": ConfidenceLevel.DATA_UNAVAILABLE,
             "dataFreshnessSeconds": data_freshness,
-            "debugData": base,
+            "serverTimeEpochSeconds": now,
+            "serverTimeIsoUtc": now_iso,
+            "debugData": debug,
+            **extras,
         }
 
-    if eta_f is None:
-        winning = candidate_g
-        losing = candidate_f
-        reason = RecommendationReason.LOW_CONFIDENCE
-        tie_used = False
-    elif eta_g is None:
-        winning = candidate_f
-        losing = candidate_g
-        reason = RecommendationReason.LOW_CONFIDENCE
-        tie_used = False
-    else:
-        eta_gap = abs(eta_f - eta_g)
-        if eta_gap <= TIE_WINDOW_SECONDS:
-            winning = candidate_f
-            losing = candidate_g
-            reason = RecommendationReason.ABOUT_THE_SAME_PREFER_EASIER
-            tie_used = True
-        elif eta_f < eta_g:
-            winning = candidate_f
-            losing = candidate_g
-            tie_used = False
-            reason = (
-                RecommendationReason.FASTEST_TIGHT_TRANSFER
-                if (winning.transfer_margin_seconds is not None and winning.transfer_margin_seconds < 90)
-                else RecommendationReason.FASTEST_CLEAR
-            )
-        else:
-            winning = candidate_g
-            losing = candidate_f
-            tie_used = False
-            reason = (
-                RecommendationReason.FASTEST_TIGHT_TRANSFER
-                if (winning.transfer_margin_seconds is not None and winning.transfer_margin_seconds < 90)
-                else RecommendationReason.FASTEST_CLEAR
-            )
+    debug["serverTimeIsoUtc"] = now_iso
 
-    urgency = (
-        UrgencyState.HURRY
-        if (winning.transfer_margin_seconds is not None and winning.transfer_margin_seconds < 90)
-        else UrgencyState.NORMAL
+    summary = scenario.summary_text(
+        result.winning.route, result.reason, result.urgency
     )
+    narrative = scenario.narrative_text(result, candidate_a, candidate_b)
 
-    eta_gap = (
-        abs((winning.eta_seconds or 0) - (losing.eta_seconds or 0))
-        if winning.eta_seconds is not None and losing.eta_seconds is not None
-        else None
-    )
-
-    confidence = _confidence_level(
-        data_freshness_seconds=data_freshness,
-        has_both_etas=(eta_f is not None and eta_g is not None),
-        eta_gap_seconds=eta_gap,
-        winner_transfer_margin_seconds=winning.transfer_margin_seconds,
-        tie_used=tie_used,
-    )
-
-    if data_freshness > MAX_FEED_AGE_SECONDS and confidence == ConfidenceLevel.HIGH:
-        confidence = ConfidenceLevel.MEDIUM
-
-    payload = {
-        "recommendedRoute": winning.route,
-        "urgencyState": urgency,
-        "recommendationReason": reason,
-        "summaryText": _summary_text(winning.route, reason, urgency),
-        "etaF": eta_f,
-        "etaG": eta_g,
-        "confidenceLevel": confidence,
+    return {
+        "recommendedRoute": result.winning.route,
+        "urgencyState": result.urgency,
+        "recommendationReason": result.reason,
+        "summaryText": summary,
+        "narrativeText": narrative,
+        "uncertaintyNote": uncertainty,
+        "confidenceLevel": result.confidence,
         "dataFreshnessSeconds": data_freshness,
-        "debugData": {
-            "decisionTimestamp": now,
-            "feedTimestamp": parsed.feed_ts,
-            "dataFreshnessSeconds": data_freshness,
-            "etaF": eta_f,
-            "etaG": eta_g,
-            "transferMargins": {
-                "F": candidate_f.transfer_margin_seconds,
-                "G": candidate_g.transfer_margin_seconds,
-            },
-            "routeCandidates": {
-                "F": _candidate_debug("F", candidate_f, rider_ready_f_ts),
-                "G": _candidate_debug("G", candidate_g, rider_ready_g_ts),
-            },
-            "acReference": {"jayTs": ac_jay_ts, "hoytTs": ac_hoyt_ts},
-            "destinationStopId": DESTINATION_STOP_ID,
-            "winningRoute": winning.route,
-            "recommendationReason": reason,
-            "urgencyState": urgency,
-            "confidenceLevel": confidence,
-        },
+        "serverTimeEpochSeconds": now,
+        "serverTimeIsoUtc": now_iso,
+        "debugData": debug,
+        **extras,
     }
-
-    if confidence == ConfidenceLevel.LOW and reason in {
-        RecommendationReason.FASTEST_CLEAR,
-        RecommendationReason.FASTEST_TIGHT_TRANSFER,
-    }:
-        payload["recommendationReason"] = RecommendationReason.LOW_CONFIDENCE
-        payload["summaryText"] = _summary_text(
-            winning.route,
-            RecommendationReason.LOW_CONFIDENCE,
-            urgency,
-        )
-
-    return payload
 
 
 app = FastAPI(title="F or G API")
@@ -534,5 +167,9 @@ def recommendation() -> dict[str, Any]:
 
 @app.get("/debug", response_class=HTMLResponse)
 def debug_page() -> str:
-    with open(os.path.join(os.path.dirname(__file__), "..", "static", "debug.html"), "r", encoding="utf-8") as f:
+    with open(
+        os.path.join(os.path.dirname(__file__), "..", "static", "debug.html"),
+        "r",
+        encoding="utf-8",
+    ) as f:
         return f.read()

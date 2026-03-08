@@ -1,9 +1,11 @@
 import { StatusBar } from "expo-status-bar";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
+  RefreshControl,
   SafeAreaView,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -23,6 +25,8 @@ type RecommendationResponse = {
   urgencyState: UrgencyState;
   recommendationReason: RecommendationReason;
   summaryText: string;
+  narrativeText: string | null;
+  uncertaintyNote: string | null;
   etaF: number | null;
   etaG: number | null;
   confidenceLevel: ConfidenceLevel;
@@ -39,37 +43,22 @@ type RouteCandidateDebug = {
 const API_BASE_URL =
   process.env.EXPO_PUBLIC_API_BASE_URL ??
   (__DEV__ ? "http://localhost:8000" : "https://forg.aionyourside.net");
+
+// Official MTA route colors
 const ROUTE_COLORS: Record<RecommendationResponse["recommendedRoute"], string> = {
-  F: "#EB6800",
-  G: "#799534",
-  "?": "#0062CF",
-};
-const SWITCH_STOP_NAMES: Record<string, string> = {
-  A41S: "Jay St-MetroTech",
-  A42S: "Hoyt-Schermerhorn",
+  F: "#FF6319",
+  G: "#6CBE45",
+  "?": "#808183",
 };
 
 function toMinutes(seconds: number | null): string {
-  if (seconds == null) {
-    return "--";
-  }
-  return `${Math.max(0, Math.round(seconds / 60))}m`;
-}
-
-function toSwitchWindow(seconds: number | null | undefined): string {
-  if (seconds == null) {
-    return "--";
-  }
-  if (seconds < 60) {
-    return "<1m";
-  }
-  return `${Math.floor(seconds / 60)}m`;
+  if (seconds == null) return "\u2014";
+  const m = Math.max(0, Math.round(seconds / 60));
+  return `${m} min`;
 }
 
 function toClock(ts: number | null | undefined): string {
-  if (!ts) {
-    return "--:--";
-  }
+  if (ts == null) return "\u2014";
   return new Date(ts * 1000).toLocaleTimeString([], {
     hour: "numeric",
     minute: "2-digit",
@@ -81,22 +70,17 @@ function readRouteCandidate(
   route: "F" | "G",
 ): RouteCandidateDebug | null {
   const routeCandidates = debugData["routeCandidates"];
-  if (!routeCandidates || typeof routeCandidates !== "object") {
-    return null;
-  }
+  if (!routeCandidates || typeof routeCandidates !== "object") return null;
   const candidate = (routeCandidates as Record<string, unknown>)[route];
-  if (!candidate || typeof candidate !== "object") {
-    return null;
-  }
+  if (!candidate || typeof candidate !== "object") return null;
   return candidate as RouteCandidateDebug;
 }
 
 export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [recommendation, setRecommendation] = useState<RecommendationResponse | null>(
-    null,
-  );
+  const [recommendation, setRecommendation] =
+    useState<RecommendationResponse | null>(null);
   const [showDebug, setShowDebug] = useState(false);
 
   const fetchRecommendation = useCallback(async () => {
@@ -108,9 +92,7 @@ export default function App() {
       const response = await fetch(`${API_BASE_URL}/api/recommendation`, {
         cache: "no-store",
       });
-      if (!response.ok) {
-        throw new Error(`API ${response.status}`);
-      }
+      if (!response.ok) throw new Error(`API ${response.status}`);
       const data = (await response.json()) as RecommendationResponse;
       setRecommendation(data);
     } catch (err) {
@@ -124,107 +106,129 @@ export default function App() {
     fetchRecommendation();
   }, [fetchRecommendation]);
 
-  const urgencyLabel = useMemo(() => {
-    if (!recommendation) {
-      return "";
-    }
-    if (recommendation.urgencyState === "HURRY") {
-      return "HURRY";
-    }
-    return "";
-  }, [recommendation]);
-
   const routeColor = recommendation
     ? ROUTE_COLORS[recommendation.recommendedRoute]
-    : "#0062CF";
-  const recommendedCandidate =
-    recommendation && recommendation.recommendedRoute !== "?"
-      ? readRouteCandidate(recommendation.debugData, recommendation.recommendedRoute)
-      : null;
-  const switchStopId = recommendedCandidate?.switchStopId ?? null;
-  const switchStopName = switchStopId
-    ? SWITCH_STOP_NAMES[switchStopId] ?? switchStopId
-    : "Unknown switch point";
-  const switchWindow = toSwitchWindow(recommendedCandidate?.transferMarginSeconds ?? null);
+    : ROUTE_COLORS["?"];
+
   const candidateF = recommendation
     ? readRouteCandidate(recommendation.debugData, "F")
     : null;
   const candidateG = recommendation
     ? readRouteCandidate(recommendation.debugData, "G")
     : null;
-  const acReference =
+
+  const isUncertain =
     recommendation &&
-    recommendation.debugData["acReference"] &&
-    typeof recommendation.debugData["acReference"] === "object"
-      ? (recommendation.debugData["acReference"] as {
-          jayTs?: number | null;
-          hoytTs?: number | null;
-        })
-      : null;
+    (recommendation.confidenceLevel === "LOW" ||
+      recommendation.confidenceLevel === "DATA_UNAVAILABLE");
 
   return (
     <SafeAreaView style={styles.root}>
       <StatusBar style="dark" />
-      <View style={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl refreshing={loading} onRefresh={fetchRecommendation} />
+        }
+      >
         <Text style={styles.title}>F or G</Text>
 
-        {loading ? (
+        {loading && !recommendation ? (
           <View style={styles.centerBlock}>
             <ActivityIndicator size="large" color="#194f76" />
-            <Text style={styles.subtle}>Computing fresh recommendation...</Text>
+            <Text style={styles.subtle}>Loading...</Text>
           </View>
         ) : error ? (
           <View style={styles.centerBlock}>
-            <Text style={styles.route}>?</Text>
+            <View style={[styles.bullet, { backgroundColor: ROUTE_COLORS["?"] }]}>
+              <Text style={styles.bulletLetter}>?</Text>
+            </View>
             <Text style={styles.summary}>No signal</Text>
             <Text style={styles.subtle}>{error}</Text>
           </View>
         ) : recommendation ? (
           <View style={styles.centerBlock}>
+            {/* MTA-style bullet */}
             <Pressable
-              onLongPress={() => setShowDebug((previous) => !previous)}
+              onLongPress={() => setShowDebug((prev) => !prev)}
               delayLongPress={500}
             >
-              <View style={[styles.routeBadge, { backgroundColor: routeColor }]}>
-                <Text style={styles.route}>{recommendation.recommendedRoute}</Text>
+              <View style={[styles.bullet, { backgroundColor: routeColor }]}>
+                <Text style={styles.bulletLetter}>
+                  {recommendation.recommendedRoute}
+                </Text>
               </View>
             </Pressable>
-            {urgencyLabel ? <Text style={styles.hurry}>{urgencyLabel}</Text> : null}
-            <Text style={styles.summary}>{recommendation.summaryText}</Text>
 
-            <Text style={styles.timeToCarroll}>
-              Time to Carroll: F {toMinutes(recommendation.etaF)} / G{" "}
-              {toMinutes(recommendation.etaG)}
-            </Text>
-            <Text style={styles.transferTimingLine}>
-              A @ Jay {toClock(acReference?.jayTs)} to next F {toClock(candidateF?.switchAtTs)}{" "}
-              | A @ Hoyt {toClock(acReference?.hoytTs)} to next G {toClock(candidateG?.switchAtTs)}
-            </Text>
-
-            {recommendation.recommendedRoute !== "?" ? (
-              <Text style={styles.switchText}>
-                Switch at {switchStopName}. You have {switchWindow} before the{" "}
-                {recommendation.recommendedRoute} arrives.
-              </Text>
+            {/* Urgency */}
+            {recommendation.urgencyState === "HURRY" ? (
+              <Text style={styles.hurry}>HURRY</Text>
             ) : null}
 
+            {/* Summary */}
+            <Text style={styles.summary}>{recommendation.summaryText}</Text>
+
+            {/* Timing chart */}
+            <View style={styles.chart}>
+              <View
+                style={[
+                  styles.chartCol,
+                  recommendation.recommendedRoute === "F" && styles.chartColActive,
+                ]}
+              >
+                <View
+                  style={[styles.chartDot, { backgroundColor: ROUTE_COLORS.F }]}
+                />
+                <Text style={styles.chartRoute}>F</Text>
+                <Text style={styles.chartEta}>{toMinutes(recommendation.etaF)}</Text>
+                <Text style={styles.chartTime}>
+                  {toClock(candidateF?.switchAtTs)}
+                </Text>
+              </View>
+              <View style={styles.chartDivider} />
+              <View
+                style={[
+                  styles.chartCol,
+                  recommendation.recommendedRoute === "G" && styles.chartColActive,
+                ]}
+              >
+                <View
+                  style={[styles.chartDot, { backgroundColor: ROUTE_COLORS.G }]}
+                />
+                <Text style={styles.chartRoute}>G</Text>
+                <Text style={styles.chartEta}>{toMinutes(recommendation.etaG)}</Text>
+                <Text style={styles.chartTime}>
+                  {toClock(candidateG?.switchAtTs)}
+                </Text>
+              </View>
+            </View>
+
+            {/* Narrative */}
+            {recommendation.narrativeText ? (
+              <Text style={styles.narrative}>{recommendation.narrativeText}</Text>
+            ) : null}
+
+            {/* Uncertainty warning */}
+            {isUncertain && recommendation.uncertaintyNote ? (
+              <View style={styles.uncertaintyBox}>
+                <Text style={styles.uncertaintyText}>
+                  {recommendation.uncertaintyNote}
+                </Text>
+              </View>
+            ) : null}
+
+            {/* Debug panel */}
             {showDebug ? (
-              <View style={styles.debugBox}>
+              <ScrollView style={styles.debugBox} nestedScrollEnabled>
                 <Text style={styles.debugTitle}>Debug</Text>
                 <Text style={styles.debugText}>
                   {JSON.stringify(recommendation.debugData, null, 2)}
                 </Text>
-              </View>
+              </ScrollView>
             ) : null}
           </View>
         ) : null}
-      </View>
-
-      <View style={styles.footer}>
-        <Pressable style={styles.refreshButton} onPress={fetchRecommendation}>
-          <Text style={styles.refreshText}>Refresh</Text>
-        </Pressable>
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -234,11 +238,13 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#f8f4ec",
   },
-  content: {
-    flex: 1,
+  scrollContent: {
+    flexGrow: 1,
     justifyContent: "center",
     alignItems: "center",
     paddingHorizontal: 20,
+    paddingTop: 48,
+    paddingBottom: 24,
   },
   title: {
     position: "absolute",
@@ -252,26 +258,36 @@ const styles = StyleSheet.create({
     width: "100%",
     alignItems: "center",
     justifyContent: "center",
-    gap: 10,
+    gap: 12,
   },
-  routeBadge: {
-    width: 220,
-    height: 220,
-    borderRadius: 110,
+
+  // MTA-style bullet
+  bullet: {
+    width: 180,
+    height: 180,
+    borderRadius: 90,
     alignItems: "center",
     justifyContent: "center",
+    borderWidth: 4,
+    borderColor: "#ffffff",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 6,
+    elevation: 4,
   },
-  route: {
-    fontSize: 136,
-    lineHeight: 136,
+  bulletLetter: {
+    fontSize: 120,
+    lineHeight: 132,
     fontWeight: "900",
     color: "#ffffff",
   },
+
   hurry: {
     fontSize: 24,
     fontWeight: "800",
-    color: "#af3b2b",
-    letterSpacing: 1.8,
+    color: "#D03C2F",
+    letterSpacing: 2,
   },
   summary: {
     fontSize: 18,
@@ -279,52 +295,86 @@ const styles = StyleSheet.create({
     color: "#1f2a35",
     maxWidth: 320,
   },
+
+  // Timing chart
+  chart: {
+    flexDirection: "row",
+    marginTop: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#dce1e6",
+    backgroundColor: "#ffffff",
+    overflow: "hidden",
+    width: "100%",
+    maxWidth: 300,
+  },
+  chartCol: {
+    flex: 1,
+    alignItems: "center",
+    paddingVertical: 14,
+    gap: 4,
+  },
+  chartColActive: {
+    backgroundColor: "#f0f4f7",
+  },
+  chartDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  chartRoute: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#1f2a35",
+  },
+  chartEta: {
+    fontSize: 22,
+    fontWeight: "700",
+    color: "#194f76",
+  },
+  chartTime: {
+    fontSize: 13,
+    color: "#667788",
+  },
+  chartDivider: {
+    width: 1,
+    backgroundColor: "#dce1e6",
+  },
+
+  // Narrative
+  narrative: {
+    fontSize: 15,
+    color: "#3f5365",
+    textAlign: "center",
+    lineHeight: 22,
+    maxWidth: 340,
+  },
+
+  // Uncertainty warning
+  uncertaintyBox: {
+    backgroundColor: "#FEF2F2",
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    maxWidth: 340,
+  },
+  uncertaintyText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#D03C2F",
+    textAlign: "center",
+  },
+
   subtle: {
     fontSize: 14,
     color: "#647383",
     textAlign: "center",
   },
-  timeToCarroll: {
-    marginTop: 6,
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#194f76",
-    textAlign: "center",
-  },
-  switchText: {
-    fontSize: 15,
-    color: "#3f5365",
-    textAlign: "center",
-    maxWidth: 340,
-  },
-  transferTimingLine: {
-    fontSize: 13,
-    color: "#556676",
-    textAlign: "center",
-    maxWidth: 360,
-    lineHeight: 18,
-  },
-  footer: {
-    alignItems: "center",
-    paddingBottom: 14,
-  },
-  refreshButton: {
-    borderWidth: 1,
-    borderColor: "#d4dce2",
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    backgroundColor: "#ffffffcc",
-  },
-  refreshText: {
-    color: "#5f6f7e",
-    fontSize: 12,
-    letterSpacing: 0.6,
-    fontWeight: "600",
-  },
+
+  // Debug
   debugBox: {
     width: "100%",
-    maxHeight: 220,
+    maxHeight: 260,
     marginTop: 10,
     borderWidth: 1,
     borderColor: "#d7dfe6",
