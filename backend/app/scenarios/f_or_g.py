@@ -201,11 +201,11 @@ class FOrGScenario:
         if winner.transfer_margin_seconds is not None:
             if winner.transfer_margin_seconds < 60:
                 parts.append(
-                    "The transfer window is very tight \u2014 move immediately."
+                    f"You only have {winner.transfer_margin_seconds} seconds to transfer to the {winner.route}."
                 )
             elif winner.transfer_margin_seconds < 90:
                 parts.append(
-                    "The transfer window is tight \u2014 be ready to move."
+                    f"You only have about {winner.transfer_margin_seconds // 60} minute to transfer to the {winner.route}."
                 )
             else:
                 mins = winner.transfer_margin_seconds // 60

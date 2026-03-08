@@ -1,5 +1,5 @@
 import { StatusBar } from "expo-status-bar";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -38,6 +38,7 @@ type RouteCandidateDebug = {
   switchStopId?: string | null;
   transferMarginSeconds?: number | null;
   switchAtTs?: number | null;
+  arriveAtTs?: number | null;
 };
 
 const API_BASE_URL =
@@ -76,7 +77,33 @@ function readRouteCandidate(
   return candidate as RouteCandidateDebug;
 }
 
+function readAcJayTs(debugData: Record<string, unknown>): number | null {
+  const acRef = debugData["acReference"];
+  if (!acRef || typeof acRef !== "object") return null;
+  const jayTs = (acRef as Record<string, unknown>)["jayTs"];
+  return typeof jayTs === "number" ? jayTs : null;
+}
+
+function useCurrentTime(): string {
+  const [now, setNow] = useState(() =>
+    new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+  );
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => {
+    intervalRef.current = setInterval(() => {
+      setNow(
+        new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+      );
+    }, 10_000);
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, []);
+  return now;
+}
+
 export default function App() {
+  const currentTime = useCurrentTime();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [recommendation, setRecommendation] =
@@ -116,11 +143,19 @@ export default function App() {
   const candidateG = recommendation
     ? readRouteCandidate(recommendation.debugData, "G")
     : null;
+  const acJayTs = recommendation
+    ? readAcJayTs(recommendation.debugData)
+    : null;
 
   const isUncertain =
     recommendation &&
     (recommendation.confidenceLevel === "LOW" ||
       recommendation.confidenceLevel === "DATA_UNAVAILABLE");
+
+  // Carroll arrival time for the recommended route
+  const recommendedCandidate =
+    recommendation?.recommendedRoute === "G" ? candidateG : candidateF;
+  const carrollArrivalTs = recommendedCandidate?.arriveAtTs;
 
   return (
     <SafeAreaView style={styles.root}>
@@ -131,7 +166,7 @@ export default function App() {
           <RefreshControl refreshing={loading} onRefresh={fetchRecommendation} />
         }
       >
-        <Text style={styles.title}>F or G</Text>
+        <Text style={styles.title}>{currentTime}</Text>
 
         {loading && !recommendation ? (
           <View style={styles.centerBlock}>
@@ -160,16 +195,20 @@ export default function App() {
               </View>
             </Pressable>
 
-            {/* Urgency */}
-            {recommendation.urgencyState === "HURRY" ? (
-              <Text style={styles.hurry}>HURRY</Text>
-            ) : null}
-
             {/* Summary */}
             <Text style={styles.summary}>{recommendation.summaryText}</Text>
 
-            {/* Timing chart */}
+            {/* Timing chart — A/C, F, G */}
             <View style={styles.chart}>
+              <View style={styles.chartCol}>
+                <View
+                  style={[styles.chartDot, { backgroundColor: "#0039A6" }]}
+                />
+                <Text style={styles.chartRoute}>A/C</Text>
+                <Text style={styles.chartEta}>{toClock(acJayTs)}</Text>
+                <Text style={styles.chartLabel}>arrives</Text>
+              </View>
+              <View style={styles.chartDivider} />
               <View
                 style={[
                   styles.chartCol,
@@ -180,10 +219,8 @@ export default function App() {
                   style={[styles.chartDot, { backgroundColor: ROUTE_COLORS.F }]}
                 />
                 <Text style={styles.chartRoute}>F</Text>
-                <Text style={styles.chartEta}>{toMinutes(recommendation.etaF)}</Text>
-                <Text style={styles.chartTime}>
-                  {toClock(candidateF?.switchAtTs)}
-                </Text>
+                <Text style={styles.chartEta}>{toClock(candidateF?.switchAtTs)}</Text>
+                <Text style={styles.chartLabel}>{toMinutes(recommendation.etaF)}</Text>
               </View>
               <View style={styles.chartDivider} />
               <View
@@ -196,16 +233,30 @@ export default function App() {
                   style={[styles.chartDot, { backgroundColor: ROUTE_COLORS.G }]}
                 />
                 <Text style={styles.chartRoute}>G</Text>
-                <Text style={styles.chartEta}>{toMinutes(recommendation.etaG)}</Text>
-                <Text style={styles.chartTime}>
-                  {toClock(candidateG?.switchAtTs)}
-                </Text>
+                <Text style={styles.chartEta}>{toClock(candidateG?.switchAtTs)}</Text>
+                <Text style={styles.chartLabel}>{toMinutes(recommendation.etaG)}</Text>
               </View>
             </View>
 
             {/* Narrative */}
             {recommendation.narrativeText ? (
               <Text style={styles.narrative}>{recommendation.narrativeText}</Text>
+            ) : null}
+
+            {/* Carroll arrival */}
+            {carrollArrivalTs ? (
+              <View style={styles.carrollBox}>
+                <Text style={styles.carrollText}>
+                  Arrive Carroll St at {toClock(carrollArrivalTs)}
+                </Text>
+              </View>
+            ) : null}
+
+            {/* Hurry callout */}
+            {recommendation.urgencyState === "HURRY" ? (
+              <Text style={styles.hurry}>
+                HURRY TO THE {recommendation.recommendedRoute}
+              </Text>
             ) : null}
 
             {/* Uncertainty warning */}
@@ -328,12 +379,12 @@ const styles = StyleSheet.create({
     color: "#1f2a35",
   },
   chartEta: {
-    fontSize: 22,
+    fontSize: 18,
     fontWeight: "700",
     color: "#194f76",
   },
-  chartTime: {
-    fontSize: 13,
+  chartLabel: {
+    fontSize: 12,
     color: "#667788",
   },
   chartDivider: {
@@ -348,6 +399,24 @@ const styles = StyleSheet.create({
     textAlign: "center",
     lineHeight: 22,
     maxWidth: 340,
+  },
+
+  // Carroll arrival
+  carrollBox: {
+    borderRadius: 8,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#dce1e6",
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    maxWidth: 300,
+    width: "100%",
+    alignItems: "center" as const,
+  },
+  carrollText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#194f76",
   },
 
   // Uncertainty warning
