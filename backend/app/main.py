@@ -5,7 +5,7 @@ import time
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
@@ -13,6 +13,7 @@ from app.engine.decision import DecisionResult, decide
 from app.feeds.client import FeedClient
 from app.models import (
     ConfidenceLevel,
+    FeedSnapshot,
     RecommendationReason,
     RouteCandidate,
     UrgencyState,
@@ -26,7 +27,8 @@ TIE_WINDOW_SECONDS = int(os.getenv("TIE_WINDOW_SECONDS", "60"))
 FEED_CACHE_SECONDS = int(os.getenv("FEED_CACHE_SECONDS", "20"))
 MTA_API_KEY = os.getenv("MTA_API_KEY", "")
 
-scenario = FOrGScenario()
+scenario_outbound = FOrGScenario(direction="outbound")
+scenario_inbound = FOrGScenario(direction="inbound")
 feed_client = FeedClient(api_key=MTA_API_KEY, cache_seconds=FEED_CACHE_SECONDS)
 
 
@@ -51,35 +53,13 @@ def _uncertainty_note(
     return "Limited confidence in this recommendation."
 
 
-def _build_recommendation() -> dict[str, Any]:
-    now = int(time.time())
-    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
-
-    try:
-        snapshot = feed_client.fetch(scenario.feed_urls)
-    except Exception:
-        debug = {
-            "decisionTimestamp": now,
-            "feedTimestamp": None,
-            "dataFreshnessSeconds": None,
-        }
-        return {
-            "recommendedRoute": "?",
-            "urgencyState": UrgencyState.NORMAL,
-            "recommendationReason": RecommendationReason.DATA_UNAVAILABLE,
-            "summaryText": "No signal.",
-            "narrativeText": None,
-            "uncertaintyNote": "Could not reach train data feeds.",
-            "etaF": None,
-            "etaG": None,
-            "confidenceLevel": ConfidenceLevel.DATA_UNAVAILABLE,
-            "dataFreshnessSeconds": None,
-            "serverTimeEpochSeconds": now,
-            "serverTimeIsoUtc": now_iso,
-            "debugData": debug,
-        }
-
-    data_freshness = max(0, now - snapshot.feed_ts)
+def _build_one_recommendation(
+    scenario: FOrGScenario,
+    snapshot: FeedSnapshot,
+    now: int,
+    now_iso: str,
+    data_freshness: int,
+) -> dict[str, Any]:
     candidate_a, candidate_b = scenario.extract_candidates(snapshot, now)
 
     result = decide(
@@ -96,7 +76,7 @@ def _build_recommendation() -> dict[str, Any]:
         candidate_a, candidate_b, result, snapshot, now
     )
 
-    debug = {
+    debug: dict[str, Any] = {
         "decisionTimestamp": now,
         "feedTimestamp": snapshot.feed_ts,
         "dataFreshnessSeconds": data_freshness,
@@ -144,6 +124,51 @@ def _build_recommendation() -> dict[str, Any]:
     }
 
 
+def _build_recommendation() -> dict[str, Any]:
+    now = int(time.time())
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+
+    # Both scenarios use the same feeds — fetch once
+    feed_urls = list(
+        dict.fromkeys(scenario_outbound.feed_urls + scenario_inbound.feed_urls)
+    )
+
+    try:
+        snapshot = feed_client.fetch(feed_urls)
+    except Exception:
+        error_result = {
+            "recommendedRoute": "?",
+            "urgencyState": UrgencyState.NORMAL,
+            "recommendationReason": RecommendationReason.DATA_UNAVAILABLE,
+            "summaryText": "No signal.",
+            "narrativeText": None,
+            "uncertaintyNote": "Could not reach train data feeds.",
+            "etaF": None,
+            "etaG": None,
+            "confidenceLevel": ConfidenceLevel.DATA_UNAVAILABLE,
+            "dataFreshnessSeconds": None,
+            "serverTimeEpochSeconds": now,
+            "serverTimeIsoUtc": now_iso,
+            "debugData": {
+                "decisionTimestamp": now,
+                "feedTimestamp": None,
+                "dataFreshnessSeconds": None,
+            },
+        }
+        return {"outbound": error_result, "inbound": error_result}
+
+    data_freshness = max(0, now - snapshot.feed_ts)
+
+    return {
+        "outbound": _build_one_recommendation(
+            scenario_outbound, snapshot, now, now_iso, data_freshness
+        ),
+        "inbound": _build_one_recommendation(
+            scenario_inbound, snapshot, now, now_iso, data_freshness
+        ),
+    }
+
+
 app = FastAPI(title="F or G API")
 
 app.add_middleware(
@@ -161,8 +186,12 @@ def health() -> dict[str, str]:
 
 
 @app.get("/api/recommendation")
-def recommendation() -> dict[str, Any]:
-    return _build_recommendation()
+def recommendation(v: int = Query(default=1)) -> dict[str, Any]:
+    result = _build_recommendation()
+    if v >= 2:
+        return result
+    # v1: return flat outbound-only response for backward compatibility
+    return result["outbound"]
 
 
 @app.get("/debug", response_class=HTMLResponse)

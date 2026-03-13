@@ -23,17 +23,35 @@ def _split_urls(key: str, default: str) -> list[str]:
 
 
 class FOrGScenario:
-    scenario_id = "f_or_g"
-    route_choices = ("F", "G")
-    tie_winner = "F"
-
-    TRANSFER_OVERHEAD = {"F": 0, "G": 90}
     STOP_NAMES: dict[str, str] = {
         "A41S": "Jay St\u2011MetroTech",
+        "A41N": "Jay St\u2011MetroTech",
         "A42S": "Hoyt\u2011Schermerhorn",
+        "A42N": "Hoyt\u2011Schermerhorn",
     }
 
-    def __init__(self) -> None:
+    def __init__(self, direction: str = "outbound") -> None:
+        self._direction = direction
+
+        if direction == "outbound":
+            # Southbound A/C: Jay St first, then Hoyt
+            self.scenario_id = "f_or_g_outbound"
+            self.route_choices = ("F", "G")
+            self.tie_winner = "F"
+            self.TRANSFER_OVERHEAD = {"F": 0, "G": 90}
+            ac_jay_default = "A41S"
+            ac_hoyt_default = "A42S"
+            self._first_stop_is_jay = True
+        else:
+            # Northbound A/C: Hoyt first, then Jay St
+            self.scenario_id = "f_or_g_inbound"
+            self.route_choices = ("F", "G")
+            self.tie_winner = "G"
+            self.TRANSFER_OVERHEAD = {"F": 90, "G": 0}
+            ac_jay_default = "A41N"
+            ac_hoyt_default = "A42N"
+            self._first_stop_is_jay = False
+
         self._fg_feed_urls = _split_urls(
             "MTA_FEED_URLS",
             (
@@ -45,13 +63,14 @@ class FOrGScenario:
             "MTA_A_C_FEED_URL",
             "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-ace",
         )
+        # F and G boarding stops are always southbound (toward Carroll)
         self._boarding_stop_ids_f = _split_env("MTA_BOARDING_STOP_IDS_F", "A41S")
         self._boarding_stop_ids_g = _split_env("MTA_BOARDING_STOP_IDS_G", "A42S")
         self._destination_stop_id = (
             os.getenv("MTA_DESTINATION_STOP_ID", "F21S").strip() or None
         )
-        self._ac_jay_stop_id = os.getenv("MTA_AC_JAY_STOP_ID", "A41S").strip() or "A41S"
-        self._ac_hoyt_stop_id = os.getenv("MTA_AC_HOYT_STOP_ID", "A42S").strip() or "A42S"
+        self._ac_jay_stop_id = ac_jay_default
+        self._ac_hoyt_stop_id = ac_hoyt_default
 
         # Stashed per-request for debug_data to reference
         self._last_ac_jay_ts: int | None = None
@@ -109,6 +128,11 @@ class FOrGScenario:
     def _extract_ac_windows(
         self, snapshot: FeedSnapshot, now: int
     ) -> list[tuple[int, int]]:
+        """Return (jay_ts, hoyt_ts) pairs for A/C trains in the right direction.
+
+        Outbound (southbound A/C): jay first, hoyt second → hoyt_ts >= jay_ts.
+        Inbound (northbound A/C): hoyt first, jay second → jay_ts >= hoyt_ts.
+        """
         windows: list[tuple[int, int]] = []
         for tu in snapshot.trip_updates:
             if tu.route_id not in {"A", "C"}:
@@ -120,14 +144,19 @@ class FOrGScenario:
                     jay_ts = st.arrival_ts
                 elif st.stop_id == self._ac_hoyt_stop_id:
                     hoyt_ts = st.arrival_ts
-            if (
-                jay_ts is not None
-                and hoyt_ts is not None
-                and hoyt_ts >= jay_ts
-                and jay_ts >= now
-            ):
-                windows.append((jay_ts, hoyt_ts))
-        return sorted(windows, key=lambda p: p[0])
+            if jay_ts is None or hoyt_ts is None:
+                continue
+            if self._first_stop_is_jay:
+                # Outbound: jay first, then hoyt
+                if hoyt_ts >= jay_ts and jay_ts >= now:
+                    windows.append((jay_ts, hoyt_ts))
+            else:
+                # Inbound: hoyt first, then jay
+                if jay_ts >= hoyt_ts and hoyt_ts >= now:
+                    windows.append((jay_ts, hoyt_ts))
+        # Sort by the first stop's arrival time
+        sort_key = 0 if self._first_stop_is_jay else 1
+        return sorted(windows, key=lambda p: p[sort_key])
 
     def extract_candidates(
         self, snapshot: FeedSnapshot, now: int
@@ -138,7 +167,11 @@ class FOrGScenario:
         ac_jay_ts = ac_window[0] if ac_window else None
         ac_hoyt_ts = ac_window[1] if ac_window else None
 
-        rider_ready_f_ts = ac_jay_ts if ac_jay_ts is not None else now
+        rider_ready_f_ts = (
+            ac_jay_ts + self.TRANSFER_OVERHEAD["F"]
+            if ac_jay_ts is not None
+            else now + self.TRANSFER_OVERHEAD["F"]
+        )
         rider_ready_g_ts = (
             ac_hoyt_ts + self.TRANSFER_OVERHEAD["G"]
             if ac_hoyt_ts is not None
@@ -168,7 +201,7 @@ class FOrGScenario:
         if reason == RecommendationReason.DATA_UNAVAILABLE:
             return "No signal. Pull to refresh."
         if reason == RecommendationReason.ABOUT_THE_SAME_PREFER_EASIER:
-            return "F and G are close. Take F."
+            return f"F and G are close. Take {self.tie_winner}."
         if reason == RecommendationReason.FASTEST_TIGHT_TRANSFER:
             if urgency == UrgencyState.HURRY:
                 return f"Take {recommended_route}. Transfer is tight."
@@ -190,9 +223,14 @@ class FOrGScenario:
         )
 
         if result.reason == RecommendationReason.ABOUT_THE_SAME_PREFER_EASIER:
+            easy_route = self.tie_winner
+            if self._first_stop_is_jay:
+                easy_stop = self.STOP_NAMES.get("A41S", "Jay St")
+            else:
+                easy_stop = self.STOP_NAMES.get("A42N", "Hoyt")
             return (
                 "Both routes arrive in about the same time. "
-                f"The F is the easier transfer at {self.STOP_NAMES.get('A41S', 'Jay St')}"
+                f"The {easy_route} is the easier transfer at {easy_stop}"
                 " \u2014 just cross the platform."
             )
 

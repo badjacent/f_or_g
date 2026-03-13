@@ -36,6 +36,13 @@ type RecommendationResponse = {
   debugData: Record<string, unknown>;
 };
 
+type BothDirectionsResponse = {
+  outbound: RecommendationResponse;
+  inbound: RecommendationResponse;
+};
+
+type Direction = "outbound" | "inbound";
+
 type RouteCandidateDebug = {
   switchStopId?: string | null;
   transferMarginSeconds?: number | null;
@@ -52,6 +59,11 @@ const ROUTE_COLORS: Record<RecommendationResponse["recommendedRoute"], string> =
   F: "#FF6319",
   G: "#6CBE45",
   "?": "#808183",
+};
+
+const DIRECTION_LABELS: Record<Direction, string> = {
+  outbound: "Manhattan \u2192 Brooklyn",
+  inbound: "Brooklyn \u2192 Manhattan",
 };
 
 function toMinutes(seconds: number | null): string {
@@ -178,8 +190,9 @@ export default function App() {
   const currentTime = useCurrentTime();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [recommendation, setRecommendation] =
-    useState<RecommendationResponse | null>(null);
+  const [bothDirections, setBothDirections] =
+    useState<BothDirectionsResponse | null>(null);
+  const [direction, setDirection] = useState<Direction>("outbound");
   const [showDebug, setShowDebug] = useState(false);
   const [previewMode, setPreviewMode] = useState(false);
   const [previewIndex, setPreviewIndex] = useState(0);
@@ -187,15 +200,15 @@ export default function App() {
   const fetchRecommendation = useCallback(async () => {
     setLoading(true);
     setError(null);
-    setRecommendation(null);
+    setBothDirections(null);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/recommendation`, {
+      const response = await fetch(`${API_BASE_URL}/api/recommendation?v=2`, {
         cache: "no-store",
       });
       if (!response.ok) throw new Error(`API ${response.status}`);
-      const data = (await response.json()) as RecommendationResponse;
-      setRecommendation(data);
+      const data = (await response.json()) as BothDirectionsResponse;
+      setBothDirections(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Request failed");
     } finally {
@@ -206,6 +219,9 @@ export default function App() {
   useEffect(() => {
     fetchRecommendation();
   }, [fetchRecommendation]);
+
+  // Active recommendation for the selected direction
+  const recommendation = bothDirections?.[direction] ?? null;
 
   // In preview mode, use mock data; otherwise use live API data
   const displayData = previewMode
@@ -243,6 +259,20 @@ export default function App() {
         }
       >
         <Text style={styles.title}>{currentTime}</Text>
+
+        {/* Direction toggle */}
+        {!previewMode && (
+          <TouchableOpacity
+            onPress={() =>
+              setDirection((d) => (d === "outbound" ? "inbound" : "outbound"))
+            }
+            style={styles.directionToggle}
+          >
+            <Text style={styles.directionText}>
+              {DIRECTION_LABELS[direction]}
+            </Text>
+          </TouchableOpacity>
+        )}
 
         {/* Preview mode banner */}
         {previewMode && (
@@ -322,7 +352,7 @@ export default function App() {
             <View style={styles.timelines}>
               <RouteTimeline
                 route={winnerIsF ? "F" : "G"}
-                acLabel={winnerIsF ? "A at Jay St" : "A/C at Hoyt"}
+                acLabel={winnerIsF ? "A/C at Jay St" : "A/C at Hoyt"}
                 acTs={winnerIsF ? acRef.jayTs : acRef.hoytTs}
                 boardTs={
                   winnerIsF ? candidateF?.switchAtTs : candidateG?.switchAtTs
@@ -336,7 +366,7 @@ export default function App() {
               />
               <RouteTimeline
                 route={winnerIsF ? "G" : "F"}
-                acLabel={winnerIsF ? "A/C at Hoyt" : "A at Jay St"}
+                acLabel={winnerIsF ? "A/C at Hoyt" : "A/C at Jay St"}
                 acTs={winnerIsF ? acRef.hoytTs : acRef.jayTs}
                 boardTs={
                   winnerIsF ? candidateG?.switchAtTs : candidateF?.switchAtTs
@@ -414,6 +444,21 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 12,
+  },
+
+  // Direction toggle
+  directionToggle: {
+    backgroundColor: "#23435c",
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 18,
+    marginBottom: 16,
+  },
+  directionText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#ffffff",
+    letterSpacing: 1,
   },
 
   // MTA-style bullet
