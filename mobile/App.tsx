@@ -8,8 +8,10 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TouchableOpacity,
   View,
 } from "react-native";
+import { SCENARIOS } from "./scenarios";
 
 type UrgencyState = "NORMAL" | "HURRY";
 type RecommendationReason =
@@ -77,11 +79,17 @@ function readRouteCandidate(
   return candidate as RouteCandidateDebug;
 }
 
-function readAcJayTs(debugData: Record<string, unknown>): number | null {
+function readAcReference(debugData: Record<string, unknown>): {
+  jayTs: number | null;
+  hoytTs: number | null;
+} {
   const acRef = debugData["acReference"];
-  if (!acRef || typeof acRef !== "object") return null;
-  const jayTs = (acRef as Record<string, unknown>)["jayTs"];
-  return typeof jayTs === "number" ? jayTs : null;
+  if (!acRef || typeof acRef !== "object") return { jayTs: null, hoytTs: null };
+  const ref = acRef as Record<string, unknown>;
+  return {
+    jayTs: typeof ref["jayTs"] === "number" ? ref["jayTs"] : null,
+    hoytTs: typeof ref["hoytTs"] === "number" ? ref["hoytTs"] : null,
+  };
 }
 
 function useCurrentTime(): string {
@@ -102,6 +110,70 @@ function useCurrentTime(): string {
   return now;
 }
 
+function RouteTimeline({
+  route,
+  acLabel,
+  acTs,
+  boardTs,
+  carrollTs,
+  etaSeconds,
+  isWinner,
+  routeColor,
+}: {
+  route: "F" | "G";
+  acLabel: string;
+  acTs: number | null;
+  boardTs: number | null | undefined;
+  carrollTs: number | null | undefined;
+  etaSeconds: number | null;
+  isWinner: boolean;
+  routeColor: string;
+}) {
+  return (
+    <View
+      style={[
+        styles.timeline,
+        isWinner ? styles.timelineWinner : styles.timelineDimmed,
+      ]}
+    >
+      <View style={styles.timelineHeader}>
+        <View style={[styles.timelineDot, { backgroundColor: routeColor }]} />
+        <Text
+          style={[
+            styles.timelineRoute,
+            isWinner && { color: routeColor },
+          ]}
+        >
+          {route} route
+        </Text>
+        {etaSeconds != null && (
+          <Text style={styles.timelineTotal}>{toMinutes(etaSeconds)}</Text>
+        )}
+      </View>
+      <View style={styles.timelineSteps}>
+        <View style={styles.timelineStep}>
+          <Text style={styles.stepLabel}>{acLabel}</Text>
+          <Text style={[styles.stepTime, isWinner && styles.stepTimeBold]}>
+            {toClock(acTs)}
+          </Text>
+        </View>
+        <View style={styles.timelineStep}>
+          <Text style={styles.stepLabel}>Board {route}</Text>
+          <Text style={[styles.stepTime, isWinner && styles.stepTimeBold]}>
+            {toClock(boardTs)}
+          </Text>
+        </View>
+        <View style={styles.timelineStep}>
+          <Text style={styles.stepLabel}>Carroll St</Text>
+          <Text style={[styles.stepTime, isWinner && styles.stepTimeBold]}>
+            {toClock(carrollTs)}
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
 export default function App() {
   const currentTime = useCurrentTime();
   const [loading, setLoading] = useState(true);
@@ -109,6 +181,8 @@ export default function App() {
   const [recommendation, setRecommendation] =
     useState<RecommendationResponse | null>(null);
   const [showDebug, setShowDebug] = useState(false);
+  const [previewMode, setPreviewMode] = useState(false);
+  const [previewIndex, setPreviewIndex] = useState(0);
 
   const fetchRecommendation = useCallback(async () => {
     setLoading(true);
@@ -133,29 +207,31 @@ export default function App() {
     fetchRecommendation();
   }, [fetchRecommendation]);
 
-  const routeColor = recommendation
-    ? ROUTE_COLORS[recommendation.recommendedRoute]
+  // In preview mode, use mock data; otherwise use live API data
+  const displayData = previewMode
+    ? (SCENARIOS[previewIndex]?.data as RecommendationResponse | undefined) ?? null
+    : recommendation;
+
+  const routeColor = displayData
+    ? ROUTE_COLORS[displayData.recommendedRoute]
     : ROUTE_COLORS["?"];
 
-  const candidateF = recommendation
-    ? readRouteCandidate(recommendation.debugData, "F")
+  const candidateF = displayData
+    ? readRouteCandidate(displayData.debugData, "F")
     : null;
-  const candidateG = recommendation
-    ? readRouteCandidate(recommendation.debugData, "G")
+  const candidateG = displayData
+    ? readRouteCandidate(displayData.debugData, "G")
     : null;
-  const acJayTs = recommendation
-    ? readAcJayTs(recommendation.debugData)
-    : null;
+  const acRef = displayData
+    ? readAcReference(displayData.debugData)
+    : { jayTs: null, hoytTs: null };
 
   const isUncertain =
-    recommendation &&
-    (recommendation.confidenceLevel === "LOW" ||
-      recommendation.confidenceLevel === "DATA_UNAVAILABLE");
+    displayData &&
+    (displayData.confidenceLevel === "LOW" ||
+      displayData.confidenceLevel === "DATA_UNAVAILABLE");
 
-  // Carroll arrival time for the recommended route
-  const recommendedCandidate =
-    recommendation?.recommendedRoute === "G" ? candidateG : candidateF;
-  const carrollArrivalTs = recommendedCandidate?.arriveAtTs;
+  const winnerIsF = displayData?.recommendedRoute === "F";
 
   return (
     <SafeAreaView style={styles.root}>
@@ -168,12 +244,46 @@ export default function App() {
       >
         <Text style={styles.title}>{currentTime}</Text>
 
-        {loading && !recommendation ? (
+        {/* Preview mode banner */}
+        {previewMode && (
+          <View style={styles.previewBanner}>
+            <TouchableOpacity
+              onPress={() =>
+                setPreviewIndex((i) =>
+                  i > 0 ? i - 1 : SCENARIOS.length - 1,
+                )
+              }
+              style={styles.previewArrow}
+            >
+              <Text style={styles.previewArrowText}>{"\u25C0"}</Text>
+            </TouchableOpacity>
+            <View style={styles.previewLabel}>
+              <Text style={styles.previewTitle}>
+                {SCENARIOS[previewIndex]?.name}
+              </Text>
+              <Text style={styles.previewCount}>
+                {previewIndex + 1} / {SCENARIOS.length}
+              </Text>
+            </View>
+            <TouchableOpacity
+              onPress={() =>
+                setPreviewIndex((i) =>
+                  i < SCENARIOS.length - 1 ? i + 1 : 0,
+                )
+              }
+              style={styles.previewArrow}
+            >
+              <Text style={styles.previewArrowText}>{"\u25B6"}</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {!previewMode && loading && !recommendation ? (
           <View style={styles.centerBlock}>
             <ActivityIndicator size="large" color="#194f76" />
             <Text style={styles.subtle}>Loading...</Text>
           </View>
-        ) : error ? (
+        ) : !previewMode && error ? (
           <View style={styles.centerBlock}>
             <View style={[styles.bullet, { backgroundColor: ROUTE_COLORS["?"] }]}>
               <Text style={styles.bulletLetter}>?</Text>
@@ -181,7 +291,7 @@ export default function App() {
             <Text style={styles.summary}>No signal</Text>
             <Text style={styles.subtle}>{error}</Text>
           </View>
-        ) : recommendation ? (
+        ) : displayData ? (
           <View style={styles.centerBlock}>
             {/* MTA-style bullet */}
             <Pressable
@@ -190,92 +300,86 @@ export default function App() {
             >
               <View style={[styles.bullet, { backgroundColor: routeColor }]}>
                 <Text style={styles.bulletLetter}>
-                  {recommendation.recommendedRoute}
+                  {displayData.recommendedRoute}
                 </Text>
               </View>
             </Pressable>
 
-            {/* Summary */}
-            <Text style={styles.summary}>{recommendation.summaryText}</Text>
+            {/* Hurry callout — immediately under bullet */}
+            {displayData.urgencyState === "HURRY" && (
+              <Text style={styles.hurry}>HURRY</Text>
+            )}
 
-            {/* Timing chart — A/C, F, G */}
-            <View style={styles.chart}>
-              <View style={styles.chartCol}>
-                <View
-                  style={[styles.chartDot, { backgroundColor: "#0039A6" }]}
-                />
-                <Text style={styles.chartRoute}>A/C</Text>
-                <Text style={styles.chartEta}>{toClock(acJayTs)}</Text>
-                <Text style={styles.chartLabel}>arrives</Text>
-              </View>
-              <View style={styles.chartDivider} />
-              <View
-                style={[
-                  styles.chartCol,
-                  recommendation.recommendedRoute === "F" && styles.chartColActive,
-                ]}
-              >
-                <View
-                  style={[styles.chartDot, { backgroundColor: ROUTE_COLORS.F }]}
-                />
-                <Text style={styles.chartRoute}>F</Text>
-                <Text style={styles.chartEta}>{toClock(candidateF?.switchAtTs)}</Text>
-                <Text style={styles.chartLabel}>{toMinutes(recommendation.etaF)}</Text>
-              </View>
-              <View style={styles.chartDivider} />
-              <View
-                style={[
-                  styles.chartCol,
-                  recommendation.recommendedRoute === "G" && styles.chartColActive,
-                ]}
-              >
-                <View
-                  style={[styles.chartDot, { backgroundColor: ROUTE_COLORS.G }]}
-                />
-                <Text style={styles.chartRoute}>G</Text>
-                <Text style={styles.chartEta}>{toClock(candidateG?.switchAtTs)}</Text>
-                <Text style={styles.chartLabel}>{toMinutes(recommendation.etaG)}</Text>
-              </View>
-            </View>
+            {/* Summary */}
+            <Text style={styles.summary}>{displayData.summaryText}</Text>
 
             {/* Narrative */}
-            {recommendation.narrativeText ? (
-              <Text style={styles.narrative}>{recommendation.narrativeText}</Text>
+            {displayData.narrativeText ? (
+              <Text style={styles.narrative}>{displayData.narrativeText}</Text>
             ) : null}
 
-            {/* Carroll arrival */}
-            {carrollArrivalTs ? (
-              <View style={styles.carrollBox}>
-                <Text style={styles.carrollText}>
-                  Arrive Carroll St at {toClock(carrollArrivalTs)}
-                </Text>
-              </View>
-            ) : null}
-
-            {/* Hurry callout */}
-            {recommendation.urgencyState === "HURRY" ? (
-              <Text style={styles.hurry}>
-                HURRY TO THE {recommendation.recommendedRoute}
-              </Text>
-            ) : null}
+            {/* Route timelines — winner first */}
+            <View style={styles.timelines}>
+              <RouteTimeline
+                route={winnerIsF ? "F" : "G"}
+                acLabel={winnerIsF ? "A at Jay St" : "A/C at Hoyt"}
+                acTs={winnerIsF ? acRef.jayTs : acRef.hoytTs}
+                boardTs={
+                  winnerIsF ? candidateF?.switchAtTs : candidateG?.switchAtTs
+                }
+                carrollTs={
+                  winnerIsF ? candidateF?.arriveAtTs : candidateG?.arriveAtTs
+                }
+                etaSeconds={winnerIsF ? displayData.etaF : displayData.etaG}
+                isWinner={true}
+                routeColor={winnerIsF ? ROUTE_COLORS.F : ROUTE_COLORS.G}
+              />
+              <RouteTimeline
+                route={winnerIsF ? "G" : "F"}
+                acLabel={winnerIsF ? "A/C at Hoyt" : "A at Jay St"}
+                acTs={winnerIsF ? acRef.hoytTs : acRef.jayTs}
+                boardTs={
+                  winnerIsF ? candidateG?.switchAtTs : candidateF?.switchAtTs
+                }
+                carrollTs={
+                  winnerIsF ? candidateG?.arriveAtTs : candidateF?.arriveAtTs
+                }
+                etaSeconds={winnerIsF ? displayData.etaG : displayData.etaF}
+                isWinner={false}
+                routeColor={winnerIsF ? ROUTE_COLORS.G : ROUTE_COLORS.F}
+              />
+            </View>
 
             {/* Uncertainty warning */}
-            {isUncertain && recommendation.uncertaintyNote ? (
+            {isUncertain && displayData.uncertaintyNote ? (
               <View style={styles.uncertaintyBox}>
                 <Text style={styles.uncertaintyText}>
-                  {recommendation.uncertaintyNote}
+                  {displayData.uncertaintyNote}
                 </Text>
               </View>
             ) : null}
 
             {/* Debug panel */}
             {showDebug ? (
-              <ScrollView style={styles.debugBox} nestedScrollEnabled>
-                <Text style={styles.debugTitle}>Debug</Text>
-                <Text style={styles.debugText}>
-                  {JSON.stringify(recommendation.debugData, null, 2)}
-                </Text>
-              </ScrollView>
+              <View style={styles.debugBox}>
+                <TouchableOpacity
+                  onPress={() => {
+                    setPreviewMode((prev) => !prev);
+                    setPreviewIndex(0);
+                  }}
+                  style={styles.previewToggle}
+                >
+                  <Text style={styles.previewToggleText}>
+                    {previewMode ? "Exit Preview" : "Preview Scenarios"}
+                  </Text>
+                </TouchableOpacity>
+                <ScrollView style={styles.debugScroll} nestedScrollEnabled>
+                  <Text style={styles.debugTitle}>Debug</Text>
+                  <Text style={styles.debugText}>
+                    {JSON.stringify(displayData.debugData, null, 2)}
+                  </Text>
+                </ScrollView>
+              </View>
             ) : null}
           </View>
         ) : null}
@@ -335,61 +439,16 @@ const styles = StyleSheet.create({
   },
 
   hurry: {
-    fontSize: 24,
-    fontWeight: "800",
+    fontSize: 26,
+    fontWeight: "900",
     color: "#D03C2F",
-    letterSpacing: 2,
+    letterSpacing: 3,
   },
   summary: {
     fontSize: 18,
     textAlign: "center",
     color: "#1f2a35",
     maxWidth: 320,
-  },
-
-  // Timing chart
-  chart: {
-    flexDirection: "row",
-    marginTop: 8,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#dce1e6",
-    backgroundColor: "#ffffff",
-    overflow: "hidden",
-    width: "100%",
-    maxWidth: 300,
-  },
-  chartCol: {
-    flex: 1,
-    alignItems: "center",
-    paddingVertical: 14,
-    gap: 4,
-  },
-  chartColActive: {
-    backgroundColor: "#f0f4f7",
-  },
-  chartDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-  },
-  chartRoute: {
-    fontSize: 16,
-    fontWeight: "800",
-    color: "#1f2a35",
-  },
-  chartEta: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#194f76",
-  },
-  chartLabel: {
-    fontSize: 12,
-    color: "#667788",
-  },
-  chartDivider: {
-    width: 1,
-    backgroundColor: "#dce1e6",
   },
 
   // Narrative
@@ -401,20 +460,68 @@ const styles = StyleSheet.create({
     maxWidth: 340,
   },
 
-  // Carroll arrival
-  carrollBox: {
-    borderRadius: 8,
-    backgroundColor: "#ffffff",
-    borderWidth: 1,
-    borderColor: "#dce1e6",
-    paddingVertical: 10,
-    paddingHorizontal: 18,
-    maxWidth: 300,
+  // Route timelines
+  timelines: {
     width: "100%",
-    alignItems: "center" as const,
+    maxWidth: 320,
+    gap: 8,
+    marginTop: 4,
   },
-  carrollText: {
+  timeline: {
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+  },
+  timelineWinner: {
+    backgroundColor: "#ffffff",
+    borderColor: "#dce1e6",
+  },
+  timelineDimmed: {
+    backgroundColor: "#f4f2ee",
+    borderColor: "#e4e0da",
+    opacity: 0.7,
+  },
+  timelineHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 8,
+  },
+  timelineDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  timelineRoute: {
     fontSize: 16,
+    fontWeight: "800",
+    color: "#1f2a35",
+    flex: 1,
+  },
+  timelineTotal: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#667788",
+  },
+  timelineSteps: {
+    gap: 4,
+  },
+  timelineStep: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  stepLabel: {
+    fontSize: 14,
+    color: "#667788",
+  },
+  stepTime: {
+    fontSize: 15,
+    color: "#667788",
+    fontVariant: ["tabular-nums"],
+  },
+  stepTimeBold: {
     fontWeight: "700",
     color: "#194f76",
   },
@@ -443,13 +550,16 @@ const styles = StyleSheet.create({
   // Debug
   debugBox: {
     width: "100%",
-    maxHeight: 260,
     marginTop: 10,
     borderWidth: 1,
     borderColor: "#d7dfe6",
     borderRadius: 10,
     backgroundColor: "#fff",
     padding: 10,
+    gap: 8,
+  },
+  debugScroll: {
+    maxHeight: 220,
   },
   debugTitle: {
     fontSize: 12,
@@ -462,5 +572,51 @@ const styles = StyleSheet.create({
     fontFamily: "Courier",
     fontSize: 11,
     color: "#263745",
+  },
+
+  // Preview mode
+  previewBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#194f76",
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    marginBottom: 12,
+    width: "100%",
+    maxWidth: 320,
+  },
+  previewArrow: {
+    paddingHorizontal: 14,
+    paddingVertical: 4,
+  },
+  previewArrowText: {
+    fontSize: 18,
+    color: "#ffffff",
+  },
+  previewLabel: {
+    flex: 1,
+    alignItems: "center",
+  },
+  previewTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#ffffff",
+  },
+  previewCount: {
+    fontSize: 12,
+    color: "#a0bdd4",
+  },
+  previewToggle: {
+    backgroundColor: "#194f76",
+    borderRadius: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    alignSelf: "center",
+  },
+  previewToggleText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#ffffff",
   },
 });
