@@ -11,7 +11,8 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { SCENARIOS } from "./scenarios";
+import { SCENARIOS, ON_THE_F_SCENARIOS } from "./scenarios";
+import type { MockOnTheFScenario } from "./scenarios";
 
 type UrgencyState = "NORMAL" | "HURRY";
 type RecommendationReason =
@@ -36,12 +37,35 @@ type RecommendationResponse = {
   debugData: Record<string, unknown>;
 };
 
-type BothDirectionsResponse = {
-  outbound: RecommendationResponse;
-  inbound: RecommendationResponse;
+type OnTheFTrain = {
+  tripId: string;
+  isLocal: boolean;
+  caseTag: string;
+  nextStopId: string | null;
+  nextStopName: string | null;
+  nextStopTs: number | null;
+  jayArrivalTs: number | null;
+  carrollArrivalTs: number | null;
+  carrollEtaSeconds: number | null;
+  transferDecision: RecommendationResponse | null;
+  summaryText: string | null;
+  narrativeText: string | null;
+  expressBannerText: string | null;
 };
 
-type Direction = "outbound" | "inbound";
+type OnTheFResponse = {
+  trains: OnTheFTrain[];
+  dataFreshnessSeconds: number | null;
+  serverTimeEpochSeconds: number;
+};
+
+type FullResponse = {
+  outbound: RecommendationResponse;
+  inbound: RecommendationResponse;
+  onTheF: OnTheFResponse;
+};
+
+type AppMode = "outbound" | "inbound" | "onTheF";
 
 type RouteCandidateDebug = {
   switchStopId?: string | null;
@@ -61,9 +85,10 @@ const ROUTE_COLORS: Record<RecommendationResponse["recommendedRoute"], string> =
   "?": "#808183",
 };
 
-const DIRECTION_LABELS: Record<Direction, string> = {
-  outbound: "Manhattan \u2192 Brooklyn",
-  inbound: "Brooklyn \u2192 Manhattan",
+const MODE_LABELS: Record<AppMode, string> = {
+  outbound: "\u2192 Brooklyn",
+  inbound: "\u2192 Manhattan",
+  onTheF: "On the F",
 };
 
 function toMinutes(seconds: number | null): string {
@@ -180,13 +205,121 @@ function RouteTimeline({
   );
 }
 
+function OnTheFTrainView({ train }: { train: OnTheFTrain }) {
+  if (train.isLocal) {
+    return (
+      <View style={styles.centerBlock}>
+        {/* Local F bullet */}
+        <View style={[styles.bullet, { backgroundColor: ROUTE_COLORS.F }]}>
+          <Text style={styles.bulletLetter}>F</Text>
+        </View>
+
+        <Text style={styles.summary}>
+          {train.summaryText ?? `Carroll at ${toClock(train.carrollArrivalTs)}`}
+        </Text>
+        <Text style={styles.narrative}>
+          {train.narrativeText ?? `${toMinutes(train.carrollEtaSeconds)} \u2014 no transfer needed`}
+        </Text>
+      </View>
+    );
+  }
+
+  // Express case — render transfer decision
+  const transfer = train.transferDecision;
+  if (!transfer) {
+    return (
+      <View style={styles.centerBlock}>
+        <View style={[styles.bullet, { backgroundColor: ROUTE_COLORS["?"] }]}>
+          <Text style={styles.bulletLetter}>?</Text>
+        </View>
+        <Text style={styles.summary}>Express F {"\u2014"} no transfer data</Text>
+      </View>
+    );
+  }
+
+  const routeColor = ROUTE_COLORS[transfer.recommendedRoute];
+  const candidateF = readRouteCandidate(transfer.debugData, "F");
+  const candidateG = readRouteCandidate(transfer.debugData, "G");
+  const acRef = readAcReference(transfer.debugData);
+  const winnerIsF = transfer.recommendedRoute === "F";
+  const isUncertain =
+    transfer.confidenceLevel === "LOW" ||
+    transfer.confidenceLevel === "DATA_UNAVAILABLE";
+
+  return (
+    <View style={styles.centerBlock}>
+      {/* Express warning banner */}
+      <View style={styles.expressBanner}>
+        <Text style={styles.expressBannerText}>
+          {train.expressBannerText ?? `Express F \u2014 transfer at Jay St (${toClock(train.jayArrivalTs)})`}
+        </Text>
+      </View>
+
+      {/* Hero bullet(s) */}
+      <View style={styles.diamondToCircle}>
+        <View style={[styles.diamondOuter, { backgroundColor: ROUTE_COLORS.F }]}>
+          <Text style={styles.diamondLetter}>F</Text>
+        </View>
+        <Text style={styles.diamondArrow}>{"\u2192"}</Text>
+        <View style={[styles.bulletSmall, { backgroundColor: routeColor }]}>
+          <Text style={styles.bulletLetterSmall}>
+            {transfer.recommendedRoute}
+          </Text>
+        </View>
+      </View>
+
+      {transfer.urgencyState === "HURRY" && (
+        <Text style={styles.hurry}>HURRY</Text>
+      )}
+
+      <Text style={styles.summary}>{transfer.summaryText}</Text>
+
+      {transfer.narrativeText ? (
+        <Text style={styles.narrative}>{transfer.narrativeText}</Text>
+      ) : null}
+
+      {/* Route timelines */}
+      <View style={styles.timelines}>
+        <RouteTimeline
+          route="F"
+          station="Jay"
+          acRoute={acRef.route}
+          acTs={acRef.jayTs}
+          boardTs={candidateF?.switchAtTs}
+          carrollTs={candidateF?.arriveAtTs}
+          isWinner={winnerIsF}
+          routeColor={ROUTE_COLORS.F}
+        />
+        <RouteTimeline
+          route="G"
+          station="Hoyt"
+          acRoute={acRef.route}
+          acTs={acRef.hoytTs}
+          boardTs={candidateG?.switchAtTs}
+          carrollTs={candidateG?.arriveAtTs}
+          isWinner={!winnerIsF}
+          routeColor={ROUTE_COLORS.G}
+        />
+      </View>
+
+      {isUncertain && transfer.uncertaintyNote ? (
+        <View style={styles.uncertaintyBox}>
+          <Text style={styles.uncertaintyText}>
+            {transfer.uncertaintyNote}
+          </Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 export default function App() {
   const currentTime = useCurrentTime();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [bothDirections, setBothDirections] =
-    useState<BothDirectionsResponse | null>(null);
-  const [direction, setDirection] = useState<Direction>("outbound");
+  const [fullResponse, setFullResponse] = useState<FullResponse | null>(null);
+  const [mode, setMode] = useState<AppMode>("outbound");
+  const [onTheFIndex, setOnTheFIndex] = useState(0);
   const [showDebug, setShowDebug] = useState(false);
   const [previewMode, setPreviewMode] = useState(false);
   const [previewIndex, setPreviewIndex] = useState(0);
@@ -194,15 +327,15 @@ export default function App() {
   const fetchRecommendation = useCallback(async () => {
     setLoading(true);
     setError(null);
-    setBothDirections(null);
+    setFullResponse(null);
 
     try {
       const response = await fetch(`${API_BASE_URL}/api/recommendation?v=2`, {
         cache: "no-store",
       });
       if (!response.ok) throw new Error(`API ${response.status}`);
-      const data = (await response.json()) as BothDirectionsResponse;
-      setBothDirections(data);
+      const data = (await response.json()) as FullResponse;
+      setFullResponse(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Request failed");
     } finally {
@@ -214,13 +347,34 @@ export default function App() {
     fetchRecommendation();
   }, [fetchRecommendation]);
 
-  // Active recommendation for the selected direction
-  const recommendation = bothDirections?.[direction] ?? null;
+  // Reset train index when switching to onTheF mode or changing preview scenario
+  useEffect(() => {
+    setOnTheFIndex(0);
+  }, [mode, previewIndex]);
 
-  // In preview mode, use mock data; otherwise use live API data
-  const displayData = previewMode
-    ? (SCENARIOS[previewIndex]?.data as RecommendationResponse | undefined) ?? null
-    : recommendation;
+  // Active recommendation for outbound/inbound modes
+  const recommendation =
+    mode !== "onTheF" ? (fullResponse?.[mode] ?? null) : null;
+
+  // On the F data
+  const onTheFData = fullResponse?.onTheF ?? null;
+
+  // Preview mode scenarios — depends on current mode
+  const isOnTheFPreview = previewMode && mode === "onTheF";
+  const previewScenarioList = mode === "onTheF" ? ON_THE_F_SCENARIOS : SCENARIOS;
+
+  // In preview mode for outbound/inbound, use mock data
+  const displayData =
+    previewMode && mode !== "onTheF"
+      ? (SCENARIOS[previewIndex]?.data as RecommendationResponse | undefined) ?? null
+      : recommendation;
+
+  // In preview mode for onTheF, use mock data
+  const previewOnTheFData: OnTheFResponse | null = isOnTheFPreview
+    ? (ON_THE_F_SCENARIOS[previewIndex]?.data as OnTheFResponse)
+    : null;
+
+  const activeOnTheFData = isOnTheFPreview ? previewOnTheFData : onTheFData;
 
   const routeColor = displayData
     ? ROUTE_COLORS[displayData.recommendedRoute]
@@ -243,6 +397,10 @@ export default function App() {
 
   const winnerIsF = displayData?.recommendedRoute === "F";
 
+  // On the F: current train
+  const onTheFTrains = activeOnTheFData?.trains ?? [];
+  const currentTrain = onTheFTrains[onTheFIndex] ?? null;
+
   return (
     <SafeAreaView style={styles.root}>
       <StatusBar style="dark" />
@@ -254,144 +412,277 @@ export default function App() {
       >
         <Text style={styles.title}>{currentTime}</Text>
 
-        {/* Direction toggle */}
-        {!previewMode && (
-          <TouchableOpacity
-            onPress={() =>
-              setDirection((d) => (d === "outbound" ? "inbound" : "outbound"))
-            }
-            style={styles.directionToggle}
-          >
-            <Text style={styles.directionText}>
-              {DIRECTION_LABELS[direction]}
-            </Text>
-          </TouchableOpacity>
+        {/* Mode switcher — row of three pill buttons */}
+        <View style={styles.modeSwitcher}>
+          {(["outbound", "inbound", "onTheF"] as AppMode[]).map((m) => (
+            <TouchableOpacity
+              key={m}
+              onPress={() => {
+                setMode(m);
+                setPreviewIndex(0);
+              }}
+              style={[
+                styles.modePill,
+                mode === m ? styles.modePillActive : styles.modePillInactive,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.modePillText,
+                  mode === m
+                    ? styles.modePillTextActive
+                    : styles.modePillTextInactive,
+                ]}
+              >
+                {MODE_LABELS[m]}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {/* Outbound / Inbound modes */}
+        {mode !== "onTheF" && (
+          <>
+            {!previewMode && loading && !recommendation ? (
+              <View style={styles.centerBlock}>
+                <ActivityIndicator size="large" color="#194f76" />
+                <Text style={styles.subtle}>Loading...</Text>
+              </View>
+            ) : !previewMode && error ? (
+              <View style={styles.centerBlock}>
+                <Pressable
+                  onLongPress={() => setShowDebug((prev) => !prev)}
+                  delayLongPress={500}
+                >
+                  <View style={[styles.bullet, { backgroundColor: ROUTE_COLORS["?"] }]}>
+                    <Text style={styles.bulletLetter}>?</Text>
+                  </View>
+                </Pressable>
+                <Text style={styles.summary}>No signal</Text>
+                <Text style={styles.subtle}>{error}</Text>
+                {showDebug && !previewMode ? (
+                  <View style={styles.debugBox}>
+                    <TouchableOpacity
+                      onPress={() => {
+                        setPreviewMode(true);
+                        setPreviewIndex(0);
+                      }}
+                      style={styles.previewToggle}
+                    >
+                      <Text style={styles.previewToggleText}>
+                        Preview Scenarios
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
+              </View>
+            ) : displayData ? (
+              <View style={styles.centerBlock}>
+                {/* MTA-style bullet */}
+                <Pressable
+                  onLongPress={() => setShowDebug((prev) => !prev)}
+                  delayLongPress={500}
+                >
+                  <View style={[styles.bullet, { backgroundColor: routeColor }]}>
+                    <Text style={styles.bulletLetter}>
+                      {displayData.recommendedRoute}
+                    </Text>
+                  </View>
+                </Pressable>
+
+                {/* Hurry callout */}
+                {displayData.urgencyState === "HURRY" && (
+                  <Text style={styles.hurry}>HURRY</Text>
+                )}
+
+                {/* Summary */}
+                <Text style={styles.summary}>{displayData.summaryText}</Text>
+
+                {/* Narrative */}
+                {displayData.narrativeText ? (
+                  <Text style={styles.narrative}>{displayData.narrativeText}</Text>
+                ) : null}
+
+                {/* Route timelines */}
+                <View style={styles.timelines}>
+                  <RouteTimeline
+                    route="F"
+                    station="Jay"
+                    acRoute={acRef.route}
+                    acTs={acRef.jayTs}
+                    boardTs={candidateF?.switchAtTs}
+                    carrollTs={candidateF?.arriveAtTs}
+                    isWinner={winnerIsF}
+                    routeColor={ROUTE_COLORS.F}
+                  />
+                  <RouteTimeline
+                    route="G"
+                    station="Hoyt"
+                    acRoute={acRef.route}
+                    acTs={acRef.hoytTs}
+                    boardTs={candidateG?.switchAtTs}
+                    carrollTs={candidateG?.arriveAtTs}
+                    isWinner={!winnerIsF}
+                    routeColor={ROUTE_COLORS.G}
+                  />
+                </View>
+
+                {/* Uncertainty warning */}
+                {isUncertain && displayData.uncertaintyNote ? (
+                  <View style={styles.uncertaintyBox}>
+                    <Text style={styles.uncertaintyText}>
+                      {displayData.uncertaintyNote}
+                    </Text>
+                  </View>
+                ) : null}
+
+                {/* Debug panel */}
+                {showDebug && !previewMode ? (
+                  <View style={styles.debugBox}>
+                    <TouchableOpacity
+                      onPress={() => {
+                        setPreviewMode(true);
+                        setPreviewIndex(0);
+                      }}
+                      style={styles.previewToggle}
+                    >
+                      <Text style={styles.previewToggleText}>
+                        Preview Scenarios
+                      </Text>
+                    </TouchableOpacity>
+                    <ScrollView style={styles.debugScroll} nestedScrollEnabled>
+                      <Text style={styles.debugTitle}>Debug</Text>
+                      <Text style={styles.debugText}>
+                        {JSON.stringify(displayData.debugData, null, 2)}
+                      </Text>
+                    </ScrollView>
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+          </>
         )}
 
-        {!previewMode && loading && !recommendation ? (
-          <View style={styles.centerBlock}>
-            <ActivityIndicator size="large" color="#194f76" />
-            <Text style={styles.subtle}>Loading...</Text>
-          </View>
-        ) : !previewMode && error ? (
-          <View style={styles.centerBlock}>
-            <Pressable
-              onLongPress={() => setShowDebug((prev) => !prev)}
-              delayLongPress={500}
-            >
-              <View style={[styles.bullet, { backgroundColor: ROUTE_COLORS["?"] }]}>
-                <Text style={styles.bulletLetter}>?</Text>
+        {/* On the F mode */}
+        {mode === "onTheF" && (
+          <>
+            {!previewMode && loading && !onTheFData ? (
+              <View style={styles.centerBlock}>
+                <ActivityIndicator size="large" color="#194f76" />
+                <Text style={styles.subtle}>Loading...</Text>
               </View>
-            </Pressable>
-            <Text style={styles.summary}>No signal</Text>
-            <Text style={styles.subtle}>{error}</Text>
-            {showDebug && !previewMode ? (
-              <View style={styles.debugBox}>
-                <TouchableOpacity
-                  onPress={() => {
-                    setPreviewMode(true);
-                    setPreviewIndex(0);
-                  }}
-                  style={styles.previewToggle}
+            ) : !previewMode && error ? (
+              <View style={styles.centerBlock}>
+                <Pressable
+                  onLongPress={() => setShowDebug((prev) => !prev)}
+                  delayLongPress={500}
                 >
-                  <Text style={styles.previewToggleText}>
-                    Preview Scenarios
-                  </Text>
-                </TouchableOpacity>
+                  <View style={[styles.bullet, { backgroundColor: ROUTE_COLORS["?"] }]}>
+                    <Text style={styles.bulletLetter}>?</Text>
+                  </View>
+                </Pressable>
+                <Text style={styles.summary}>No signal</Text>
+                <Text style={styles.subtle}>{error}</Text>
+                {showDebug && !previewMode ? (
+                  <View style={styles.debugBox}>
+                    <TouchableOpacity
+                      onPress={() => {
+                        setPreviewMode(true);
+                        setPreviewIndex(0);
+                      }}
+                      style={styles.previewToggle}
+                    >
+                      <Text style={styles.previewToggleText}>
+                        Preview Scenarios
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
               </View>
-            ) : null}
-          </View>
-        ) : displayData ? (
-          <View style={styles.centerBlock}>
-            {/* MTA-style bullet */}
-            <Pressable
-              onLongPress={() => setShowDebug((prev) => !prev)}
-              delayLongPress={500}
-            >
-              <View style={[styles.bullet, { backgroundColor: routeColor }]}>
-                <Text style={styles.bulletLetter}>
-                  {displayData.recommendedRoute}
-                </Text>
+            ) : onTheFTrains.length === 0 ? (
+              <View style={styles.centerBlock}>
+                <View style={[styles.bullet, { backgroundColor: ROUTE_COLORS["?"] }]}>
+                  <Text style={styles.bulletLetter}>?</Text>
+                </View>
+                <Text style={styles.summary}>No F trains found</Text>
+                <Text style={styles.subtle}>Pull to refresh</Text>
               </View>
-            </Pressable>
+            ) : currentTrain ? (
+              <>
+                <OnTheFTrainView train={currentTrain} />
 
-            {/* Hurry callout — immediately under bullet */}
-            {displayData.urgencyState === "HURRY" && (
-              <Text style={styles.hurry}>HURRY</Text>
-            )}
+                {/* Train pager */}
+                {onTheFTrains.length > 1 && (
+                  <View style={styles.trainPager}>
+                    <TouchableOpacity
+                      onPress={() =>
+                        setOnTheFIndex((i) =>
+                          i > 0 ? i - 1 : onTheFTrains.length - 1,
+                        )
+                      }
+                      style={styles.previewArrow}
+                    >
+                      <Text style={styles.previewArrowText}>{"\u25C0"}</Text>
+                    </TouchableOpacity>
+                    <View style={styles.trainPagerLabel}>
+                      <Text style={styles.trainPagerText}>
+                        {currentTrain.nextStopName
+                          ? `Next: ${currentTrain.nextStopName}`
+                          : ""}
+                        {currentTrain.jayArrivalTs
+                          ? ` \u00B7 Jay at ${toClock(currentTrain.jayArrivalTs)}`
+                          : ""}
+                      </Text>
+                      <Text style={styles.trainPagerCount}>
+                        Train {onTheFIndex + 1} of {onTheFTrains.length}
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      onPress={() =>
+                        setOnTheFIndex((i) =>
+                          i < onTheFTrains.length - 1 ? i + 1 : 0,
+                        )
+                      }
+                      style={styles.previewArrow}
+                    >
+                      <Text style={styles.previewArrowText}>{"\u25B6"}</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
 
-            {/* Summary */}
-            <Text style={styles.summary}>{displayData.summaryText}</Text>
-
-            {/* Narrative */}
-            {displayData.narrativeText ? (
-              <Text style={styles.narrative}>{displayData.narrativeText}</Text>
+                {/* Debug panel for onTheF */}
+                {showDebug && !previewMode ? (
+                  <View style={styles.debugBox}>
+                    <TouchableOpacity
+                      onPress={() => {
+                        setPreviewMode(true);
+                        setPreviewIndex(0);
+                      }}
+                      style={styles.previewToggle}
+                    >
+                      <Text style={styles.previewToggleText}>
+                        Preview Scenarios
+                      </Text>
+                    </TouchableOpacity>
+                    <ScrollView style={styles.debugScroll} nestedScrollEnabled>
+                      <Text style={styles.debugTitle}>Debug</Text>
+                      <Text style={styles.debugText}>
+                        {JSON.stringify(currentTrain, null, 2)}
+                      </Text>
+                    </ScrollView>
+                  </View>
+                ) : null}
+              </>
             ) : null}
-
-            {/* Route timelines — alphabetical (F always first) */}
-            <View style={styles.timelines}>
-              <RouteTimeline
-                route="F"
-                station="Jay"
-                acRoute={acRef.route}
-                acTs={acRef.jayTs}
-                boardTs={candidateF?.switchAtTs}
-                carrollTs={candidateF?.arriveAtTs}
-                isWinner={winnerIsF}
-                routeColor={ROUTE_COLORS.F}
-              />
-              <RouteTimeline
-                route="G"
-                station="Hoyt"
-                acRoute={acRef.route}
-                acTs={acRef.hoytTs}
-                boardTs={candidateG?.switchAtTs}
-                carrollTs={candidateG?.arriveAtTs}
-                isWinner={!winnerIsF}
-                routeColor={ROUTE_COLORS.G}
-              />
-            </View>
-
-            {/* Uncertainty warning */}
-            {isUncertain && displayData.uncertaintyNote ? (
-              <View style={styles.uncertaintyBox}>
-                <Text style={styles.uncertaintyText}>
-                  {displayData.uncertaintyNote}
-                </Text>
-              </View>
-            ) : null}
-
-            {/* Debug panel — hidden in preview mode */}
-            {showDebug && !previewMode ? (
-              <View style={styles.debugBox}>
-                <TouchableOpacity
-                  onPress={() => {
-                    setPreviewMode(true);
-                    setPreviewIndex(0);
-                  }}
-                  style={styles.previewToggle}
-                >
-                  <Text style={styles.previewToggleText}>
-                    Preview Scenarios
-                  </Text>
-                </TouchableOpacity>
-                <ScrollView style={styles.debugScroll} nestedScrollEnabled>
-                  <Text style={styles.debugTitle}>Debug</Text>
-                  <Text style={styles.debugText}>
-                    {JSON.stringify(displayData.debugData, null, 2)}
-                  </Text>
-                </ScrollView>
-              </View>
-            ) : null}
-          </View>
-        ) : null}
+          </>
+        )}
       </ScrollView>
       {previewMode && (
         <View style={styles.previewBanner}>
           <TouchableOpacity
             onPress={() =>
               setPreviewIndex((i) =>
-                i > 0 ? i - 1 : SCENARIOS.length - 1,
+                i > 0 ? i - 1 : previewScenarioList.length - 1,
               )
             }
             style={styles.previewArrow}
@@ -403,16 +694,16 @@ export default function App() {
             style={styles.previewLabel}
           >
             <Text style={styles.previewTitle}>
-              {SCENARIOS[previewIndex]?.name}
+              {previewScenarioList[previewIndex]?.name}
             </Text>
             <Text style={styles.previewCount}>
-              {previewIndex + 1} / {SCENARIOS.length} — tap to exit
+              {previewIndex + 1} / {previewScenarioList.length} — tap to exit
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
             onPress={() =>
               setPreviewIndex((i) =>
-                i < SCENARIOS.length - 1 ? i + 1 : 0,
+                i < previewScenarioList.length - 1 ? i + 1 : 0,
               )
             }
             style={styles.previewArrow}
@@ -453,19 +744,34 @@ const styles = StyleSheet.create({
     gap: 12,
   },
 
-  // Direction toggle
-  directionToggle: {
-    backgroundColor: "#23435c",
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 18,
+  // Mode switcher
+  modeSwitcher: {
+    flexDirection: "row",
+    gap: 8,
     marginBottom: 16,
   },
-  directionText: {
-    fontSize: 15,
+  modePill: {
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+  },
+  modePillActive: {
+    backgroundColor: "#23435c",
+  },
+  modePillInactive: {
+    backgroundColor: "rgba(35, 67, 92, 0.15)",
+  },
+  modePillText: {
+    fontSize: 14,
     fontWeight: "700",
+    letterSpacing: 0.5,
+  },
+  modePillTextActive: {
     color: "#ffffff",
-    letterSpacing: 1,
+  },
+  modePillTextInactive: {
+    color: "#23435c",
+    opacity: 0.6,
   },
 
   // MTA-style bullet
@@ -485,8 +791,9 @@ const styles = StyleSheet.create({
   },
   bulletLetter: {
     fontSize: 120,
-    lineHeight: 132,
-    fontWeight: "900",
+    lineHeight: 140,
+    fontWeight: "700",
+    fontFamily: "Helvetica-Bold",
     color: "#ffffff",
   },
 
@@ -566,6 +873,101 @@ const styles = StyleSheet.create({
   boxTimeBold: {
     fontWeight: "700",
     color: "#194f76",
+  },
+
+  // Diamond-to-circle transition
+  diamondToCircle: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 16,
+  },
+  diamondOuter: {
+    width: 111,
+    height: 111,
+    borderRadius: 17,
+    transform: [{ rotate: "45deg" }],
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 3,
+    borderColor: "#ffffff",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  diamondLetter: {
+    fontSize: 72,
+    lineHeight: 81,
+    fontWeight: "700",
+    fontFamily: "Helvetica-Bold",
+    color: "#ffffff",
+    transform: [{ rotate: "-45deg" }],
+  },
+  diamondArrow: {
+    fontSize: 32,
+    color: "#1f2a35",
+    fontWeight: "700",
+  },
+  bulletSmall: {
+    width: 135,
+    height: 135,
+    borderRadius: 68,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 3,
+    borderColor: "#ffffff",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  bulletLetterSmall: {
+    fontSize: 90,
+    lineHeight: 99,
+    fontWeight: "700",
+    fontFamily: "Helvetica-Bold",
+    color: "#ffffff",
+  },
+
+  // Express banner
+  expressBanner: {
+    backgroundColor: "#FFF3E0",
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    maxWidth: 340,
+    marginBottom: 4,
+  },
+  expressBannerText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#E65100",
+    textAlign: "center",
+  },
+
+  // Train pager
+  trainPager: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 12,
+    width: "100%",
+    maxWidth: 340,
+  },
+  trainPagerLabel: {
+    flex: 1,
+    alignItems: "center",
+  },
+  trainPagerText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#3f5365",
+    textAlign: "center",
+  },
+  trainPagerCount: {
+    fontSize: 11,
+    color: "#667788",
   },
 
   // Uncertainty warning

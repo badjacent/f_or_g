@@ -68,6 +68,31 @@ function makeDebugData(overrides: {
   };
 }
 
+type OnTheFTrain = {
+  tripId: string;
+  isLocal: boolean;
+  caseTag: string;
+  nextStopId: string | null;
+  nextStopName: string | null;
+  nextStopTs: number | null;
+  jayArrivalTs: number | null;
+  carrollArrivalTs: number | null;
+  carrollEtaSeconds: number | null;
+  transferDecision: MockScenario["data"] | null;
+  summaryText: string | null;
+  narrativeText: string | null;
+  expressBannerText: string | null;
+};
+
+export type MockOnTheFScenario = {
+  name: string;
+  data: {
+    trains: OnTheFTrain[];
+    dataFreshnessSeconds: number | null;
+    serverTimeEpochSeconds: number;
+  };
+};
+
 export const SCENARIOS: MockScenario[] = [
   {
     name: "F wins clearly",
@@ -244,6 +269,177 @@ export const SCENARIOS: MockScenario[] = [
         gSwitchAt: null,
         gArriveAt: null,
       }),
+    },
+  },
+];
+
+export const ON_THE_F_SCENARIOS: MockOnTheFScenario[] = [
+  {
+    name: "Local F — direct to Carroll",
+    data: {
+      trains: [
+        {
+          tripId: "mock-local-1",
+          isLocal: true,
+          caseTag: "local_direct",
+          nextStopId: "F16S",
+          nextStopName: "York St",
+          nextStopTs: BASE + min(2),
+          jayArrivalTs: BASE + min(4),
+          carrollArrivalTs: BASE + min(6),
+          carrollEtaSeconds: min(6),
+          transferDecision: null,
+          summaryText: "Sit tight. Carroll at 7:51 PM",
+          narrativeText: "6 min \u2014 sit back and enjoy the ride",
+          expressBannerText: null,
+        },
+      ],
+      dataFreshnessSeconds: 8,
+      serverTimeEpochSeconds: BASE,
+    },
+  },
+  {
+    name: "Express F — transfer favors G",
+    data: {
+      trains: [
+        {
+          tripId: "mock-express-g",
+          isLocal: false,
+          caseTag: "express_transfer",
+          nextStopId: "F16S",
+          nextStopName: "York St",
+          nextStopTs: BASE + min(2),
+          jayArrivalTs: BASE + min(5),
+          carrollArrivalTs: BASE + min(15),
+          carrollEtaSeconds: min(15),
+          summaryText: "Take G. It is clearly faster.",
+          narrativeText: "Transfer to the G via A/C. About 4 min faster than the F.",
+          expressBannerText: "This train skips Carroll \u2014 get off at Jay St (7:50 PM)",
+          transferDecision: {
+            recommendedRoute: "G",
+            urgencyState: "NORMAL",
+            recommendationReason: "FASTEST_CLEAR",
+            summaryText: "Take G. It is clearly faster.",
+            narrativeText: "Transfer to the G via A/C. About 4 min faster than the F.",
+            uncertaintyNote: null,
+            etaF: min(20),
+            etaG: min(15),
+            confidenceLevel: "HIGH",
+            dataFreshnessSeconds: 8,
+            debugData: makeDebugData({
+              jayTs: BASE + min(7),
+              hoytTs: BASE + min(9),
+              fSwitchAt: BASE + min(14),
+              fArriveAt: BASE + min(20),
+              gSwitchAt: BASE + min(11),
+              gArriveAt: BASE + min(15),
+            }),
+          },
+        },
+      ],
+      dataFreshnessSeconds: 8,
+      serverTimeEpochSeconds: BASE,
+    },
+  },
+  {
+    name: "Express F — wait for local F",
+    data: {
+      trains: [
+        {
+          tripId: "mock-express-f",
+          isLocal: false,
+          caseTag: "express_transfer",
+          nextStopId: "F15S",
+          nextStopName: "Delancey St\u2011Essex St",
+          nextStopTs: BASE + min(1),
+          jayArrivalTs: BASE + min(4),
+          carrollArrivalTs: BASE + min(12),
+          carrollEtaSeconds: min(12),
+          summaryText: "Take F. It is clearly faster.",
+          narrativeText: "Wait for a local F at Jay St. About 5 min faster than the G.",
+          expressBannerText: "Wrong F. Off at Jay St (7:49 PM), then transfer.",
+          transferDecision: {
+            recommendedRoute: "F",
+            urgencyState: "NORMAL",
+            recommendationReason: "FASTEST_CLEAR",
+            summaryText: "Take F. It is clearly faster.",
+            narrativeText: "Wait for a local F at Jay St. About 5 min faster than the G.",
+            uncertaintyNote: null,
+            etaF: min(12),
+            etaG: min(17),
+            confidenceLevel: "HIGH",
+            dataFreshnessSeconds: 10,
+            debugData: makeDebugData({
+              jayTs: BASE + min(6),
+              hoytTs: BASE + min(8),
+              fSwitchAt: BASE + min(6),
+              fArriveAt: BASE + min(12),
+              gSwitchAt: BASE + min(10),
+              gArriveAt: BASE + min(17),
+            }),
+          },
+        },
+      ],
+      dataFreshnessSeconds: 10,
+      serverTimeEpochSeconds: BASE,
+    },
+  },
+  {
+    name: "Multiple trains — express then local",
+    data: {
+      trains: [
+        {
+          tripId: "mock-express-multi",
+          isLocal: false,
+          caseTag: "express_transfer",
+          nextStopId: "F16S",
+          nextStopName: "York St",
+          nextStopTs: BASE + min(2),
+          jayArrivalTs: BASE + min(4),
+          carrollArrivalTs: BASE + min(14),
+          carrollEtaSeconds: min(14),
+          summaryText: "Take G. Transfer is tight.",
+          narrativeText: "Transfer to the G via A/C. About 3 min faster than the F.",
+          expressBannerText: "Heads up: this F is express. Jay St at 7:49 PM.",
+          transferDecision: {
+            recommendedRoute: "G",
+            urgencyState: "HURRY",
+            recommendationReason: "FASTEST_TIGHT_TRANSFER",
+            summaryText: "Take G. Transfer is tight.",
+            narrativeText: "Transfer to the G via A/C. About 3 min faster than the F.",
+            uncertaintyNote: null,
+            etaF: min(17),
+            etaG: min(14),
+            confidenceLevel: "MEDIUM",
+            dataFreshnessSeconds: 5,
+            debugData: makeDebugData({
+              jayTs: BASE + min(6),
+              hoytTs: BASE + min(7),
+              fSwitchAt: BASE + min(11),
+              fArriveAt: BASE + min(17),
+              gSwitchAt: BASE + min(9),
+              gArriveAt: BASE + min(14),
+            }),
+          },
+        },
+        {
+          tripId: "mock-local-multi",
+          isLocal: true,
+          caseTag: "local_direct",
+          nextStopId: "F14S",
+          nextStopName: "East Broadway",
+          nextStopTs: BASE + min(5),
+          jayArrivalTs: BASE + min(8),
+          carrollArrivalTs: BASE + min(11),
+          carrollEtaSeconds: min(11),
+          transferDecision: null,
+          summaryText: "Smooth sailing \u2014 Carroll at 7:56 PM",
+          narrativeText: "11 min. You picked the right train.",
+          expressBannerText: null,
+        },
+      ],
+      dataFreshnessSeconds: 5,
+      serverTimeEpochSeconds: BASE,
     },
   },
 ];

@@ -19,6 +19,7 @@ from app.models import (
     UrgencyState,
 )
 from app.scenarios.f_or_g import FOrGScenario
+from app.scenarios.on_the_f import OnTheFScenario
 
 load_dotenv()
 
@@ -29,6 +30,7 @@ MTA_API_KEY = os.getenv("MTA_API_KEY", "")
 
 scenario_outbound = FOrGScenario(direction="outbound")
 scenario_inbound = FOrGScenario(direction="inbound")
+scenario_on_the_f = OnTheFScenario()
 feed_client = FeedClient(api_key=MTA_API_KEY, cache_seconds=FEED_CACHE_SECONDS)
 
 
@@ -128,9 +130,13 @@ def _build_recommendation() -> dict[str, Any]:
     now = int(time.time())
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
 
-    # Both scenarios use the same feeds — fetch once
+    # All scenarios use the same feeds — fetch once
     feed_urls = list(
-        dict.fromkeys(scenario_outbound.feed_urls + scenario_inbound.feed_urls)
+        dict.fromkeys(
+            scenario_outbound.feed_urls
+            + scenario_inbound.feed_urls
+            + scenario_on_the_f.feed_urls
+        )
     )
 
     try:
@@ -155,7 +161,15 @@ def _build_recommendation() -> dict[str, Any]:
                 "dataFreshnessSeconds": None,
             },
         }
-        return {"outbound": error_result, "inbound": error_result}
+        return {
+            "outbound": error_result,
+            "inbound": error_result,
+            "onTheF": {
+                "trains": [],
+                "dataFreshnessSeconds": None,
+                "serverTimeEpochSeconds": now,
+            },
+        }
 
     data_freshness = max(0, now - snapshot.feed_ts)
 
@@ -166,6 +180,7 @@ def _build_recommendation() -> dict[str, Any]:
         "inbound": _build_one_recommendation(
             scenario_inbound, snapshot, now, now_iso, data_freshness
         ),
+        "onTheF": scenario_on_the_f.build_response(snapshot, now, data_freshness),
     }
 
 
