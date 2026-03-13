@@ -39,6 +39,12 @@ The A/C train arrival is not a third option — it's the starting condition for 
 
 When the rider is underground and acting now, "Board F at 7:51" is more actionable than "wait 3 min." Clock times anchor to reality; durations require mental math from "now." Show total duration as secondary context, not primary.
 
+## 9. Alphabetical ordering for route lists
+
+When displaying a list of route options, always order them alphabetically (F before G, etc.). This provides a stable, predictable layout — the rider always knows where to look for a specific route regardless of which is recommended. The winner/loser distinction is communicated through visual weight (bold vs dimmed), not position.
+
+---
+
 ## 8. Tone matches stakes
 
 The emotional register should match the actual consequence of a wrong decision. For subway transfers, the downside is a few extra minutes — the tone should be urgent but amused, not panicked. This applies to both copy and visual design.

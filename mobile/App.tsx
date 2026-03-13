@@ -92,13 +92,16 @@ function readRouteCandidate(
 }
 
 function readAcReference(debugData: Record<string, unknown>): {
+  route: string | null;
   jayTs: number | null;
   hoytTs: number | null;
 } {
   const acRef = debugData["acReference"];
-  if (!acRef || typeof acRef !== "object") return { jayTs: null, hoytTs: null };
+  if (!acRef || typeof acRef !== "object")
+    return { route: null, jayTs: null, hoytTs: null };
   const ref = acRef as Record<string, unknown>;
   return {
+    route: typeof ref["route"] === "string" ? ref["route"] : null,
     jayTs: typeof ref["jayTs"] === "number" ? ref["jayTs"] : null,
     hoytTs: typeof ref["hoytTs"] === "number" ? ref["hoytTs"] : null,
   };
@@ -124,23 +127,24 @@ function useCurrentTime(): string {
 
 function RouteTimeline({
   route,
-  acLabel,
+  station,
+  acRoute,
   acTs,
   boardTs,
   carrollTs,
-  etaSeconds,
   isWinner,
   routeColor,
 }: {
   route: "F" | "G";
-  acLabel: string;
+  station: string;
+  acRoute: string | null;
   acTs: number | null;
   boardTs: number | null | undefined;
   carrollTs: number | null | undefined;
-  etaSeconds: number | null;
   isWinner: boolean;
   routeColor: string;
 }) {
+  const acName = acRoute ?? "A/C";
   return (
     <View
       style={[
@@ -148,36 +152,26 @@ function RouteTimeline({
         isWinner ? styles.timelineWinner : styles.timelineDimmed,
       ]}
     >
-      <View style={styles.timelineHeader}>
-        <View style={[styles.timelineDot, { backgroundColor: routeColor }]} />
-        <Text
-          style={[
-            styles.timelineRoute,
-            isWinner && { color: routeColor },
-          ]}
-        >
-          {route} route
-        </Text>
-        {etaSeconds != null && (
-          <Text style={styles.timelineTotal}>{toMinutes(etaSeconds)}</Text>
-        )}
-      </View>
-      <View style={styles.timelineSteps}>
-        <View style={styles.timelineStep}>
-          <Text style={styles.stepLabel}>{acLabel}</Text>
-          <Text style={[styles.stepTime, isWinner && styles.stepTimeBold]}>
+      <View style={styles.timelineBoxes}>
+        <View style={[styles.timelineBox, isWinner ? styles.boxWinner : styles.boxDimmed]}>
+          <Text style={styles.boxLabel}>{station} ({acName})</Text>
+          <Text style={[styles.boxTime, isWinner && styles.boxTimeBold]}>
             {toClock(acTs)}
           </Text>
         </View>
-        <View style={styles.timelineStep}>
-          <Text style={styles.stepLabel}>Board {route}</Text>
-          <Text style={[styles.stepTime, isWinner && styles.stepTimeBold]}>
+        <Text style={styles.timelineArrow}>{"\u2192"}</Text>
+        <View style={[styles.timelineBox, isWinner ? styles.boxWinner : styles.boxDimmed]}>
+          <Text style={[styles.boxLabel, { color: routeColor, fontWeight: "800" }]}>
+            {station} ({route})
+          </Text>
+          <Text style={[styles.boxTime, isWinner && styles.boxTimeBold]}>
             {toClock(boardTs)}
           </Text>
         </View>
-        <View style={styles.timelineStep}>
-          <Text style={styles.stepLabel}>Carroll St</Text>
-          <Text style={[styles.stepTime, isWinner && styles.stepTimeBold]}>
+        <Text style={styles.timelineArrow}>{"\u2192"}</Text>
+        <View style={[styles.timelineBox, isWinner ? styles.boxWinner : styles.boxDimmed]}>
+          <Text style={styles.boxLabel}>Carroll ({route})</Text>
+          <Text style={[styles.boxTime, isWinner && styles.boxTimeBold]}>
             {toClock(carrollTs)}
           </Text>
         </View>
@@ -240,7 +234,7 @@ export default function App() {
     : null;
   const acRef = displayData
     ? readAcReference(displayData.debugData)
-    : { jayTs: null, hoytTs: null };
+    : { route: null, jayTs: null, hoytTs: null };
 
   const isUncertain =
     displayData &&
@@ -274,40 +268,6 @@ export default function App() {
           </TouchableOpacity>
         )}
 
-        {/* Preview mode banner */}
-        {previewMode && (
-          <View style={styles.previewBanner}>
-            <TouchableOpacity
-              onPress={() =>
-                setPreviewIndex((i) =>
-                  i > 0 ? i - 1 : SCENARIOS.length - 1,
-                )
-              }
-              style={styles.previewArrow}
-            >
-              <Text style={styles.previewArrowText}>{"\u25C0"}</Text>
-            </TouchableOpacity>
-            <View style={styles.previewLabel}>
-              <Text style={styles.previewTitle}>
-                {SCENARIOS[previewIndex]?.name}
-              </Text>
-              <Text style={styles.previewCount}>
-                {previewIndex + 1} / {SCENARIOS.length}
-              </Text>
-            </View>
-            <TouchableOpacity
-              onPress={() =>
-                setPreviewIndex((i) =>
-                  i < SCENARIOS.length - 1 ? i + 1 : 0,
-                )
-              }
-              style={styles.previewArrow}
-            >
-              <Text style={styles.previewArrowText}>{"\u25B6"}</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-
         {!previewMode && loading && !recommendation ? (
           <View style={styles.centerBlock}>
             <ActivityIndicator size="large" color="#194f76" />
@@ -315,11 +275,31 @@ export default function App() {
           </View>
         ) : !previewMode && error ? (
           <View style={styles.centerBlock}>
-            <View style={[styles.bullet, { backgroundColor: ROUTE_COLORS["?"] }]}>
-              <Text style={styles.bulletLetter}>?</Text>
-            </View>
+            <Pressable
+              onLongPress={() => setShowDebug((prev) => !prev)}
+              delayLongPress={500}
+            >
+              <View style={[styles.bullet, { backgroundColor: ROUTE_COLORS["?"] }]}>
+                <Text style={styles.bulletLetter}>?</Text>
+              </View>
+            </Pressable>
             <Text style={styles.summary}>No signal</Text>
             <Text style={styles.subtle}>{error}</Text>
+            {showDebug && !previewMode ? (
+              <View style={styles.debugBox}>
+                <TouchableOpacity
+                  onPress={() => {
+                    setPreviewMode(true);
+                    setPreviewIndex(0);
+                  }}
+                  style={styles.previewToggle}
+                >
+                  <Text style={styles.previewToggleText}>
+                    Preview Scenarios
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
           </View>
         ) : displayData ? (
           <View style={styles.centerBlock}>
@@ -348,35 +328,27 @@ export default function App() {
               <Text style={styles.narrative}>{displayData.narrativeText}</Text>
             ) : null}
 
-            {/* Route timelines — winner first */}
+            {/* Route timelines — alphabetical (F always first) */}
             <View style={styles.timelines}>
               <RouteTimeline
-                route={winnerIsF ? "F" : "G"}
-                acLabel={winnerIsF ? "A/C at Jay St" : "A/C at Hoyt"}
-                acTs={winnerIsF ? acRef.jayTs : acRef.hoytTs}
-                boardTs={
-                  winnerIsF ? candidateF?.switchAtTs : candidateG?.switchAtTs
-                }
-                carrollTs={
-                  winnerIsF ? candidateF?.arriveAtTs : candidateG?.arriveAtTs
-                }
-                etaSeconds={winnerIsF ? displayData.etaF : displayData.etaG}
-                isWinner={true}
-                routeColor={winnerIsF ? ROUTE_COLORS.F : ROUTE_COLORS.G}
+                route="F"
+                station="Jay"
+                acRoute={acRef.route}
+                acTs={acRef.jayTs}
+                boardTs={candidateF?.switchAtTs}
+                carrollTs={candidateF?.arriveAtTs}
+                isWinner={winnerIsF}
+                routeColor={ROUTE_COLORS.F}
               />
               <RouteTimeline
-                route={winnerIsF ? "G" : "F"}
-                acLabel={winnerIsF ? "A/C at Hoyt" : "A/C at Jay St"}
-                acTs={winnerIsF ? acRef.hoytTs : acRef.jayTs}
-                boardTs={
-                  winnerIsF ? candidateG?.switchAtTs : candidateF?.switchAtTs
-                }
-                carrollTs={
-                  winnerIsF ? candidateG?.arriveAtTs : candidateF?.arriveAtTs
-                }
-                etaSeconds={winnerIsF ? displayData.etaG : displayData.etaF}
-                isWinner={false}
-                routeColor={winnerIsF ? ROUTE_COLORS.G : ROUTE_COLORS.F}
+                route="G"
+                station="Hoyt"
+                acRoute={acRef.route}
+                acTs={acRef.hoytTs}
+                boardTs={candidateG?.switchAtTs}
+                carrollTs={candidateG?.arriveAtTs}
+                isWinner={!winnerIsF}
+                routeColor={ROUTE_COLORS.G}
               />
             </View>
 
@@ -389,18 +361,18 @@ export default function App() {
               </View>
             ) : null}
 
-            {/* Debug panel */}
-            {showDebug ? (
+            {/* Debug panel — hidden in preview mode */}
+            {showDebug && !previewMode ? (
               <View style={styles.debugBox}>
                 <TouchableOpacity
                   onPress={() => {
-                    setPreviewMode((prev) => !prev);
+                    setPreviewMode(true);
                     setPreviewIndex(0);
                   }}
                   style={styles.previewToggle}
                 >
                   <Text style={styles.previewToggleText}>
-                    {previewMode ? "Exit Preview" : "Preview Scenarios"}
+                    Preview Scenarios
                   </Text>
                 </TouchableOpacity>
                 <ScrollView style={styles.debugScroll} nestedScrollEnabled>
@@ -414,6 +386,41 @@ export default function App() {
           </View>
         ) : null}
       </ScrollView>
+      {previewMode && (
+        <View style={styles.previewBanner}>
+          <TouchableOpacity
+            onPress={() =>
+              setPreviewIndex((i) =>
+                i > 0 ? i - 1 : SCENARIOS.length - 1,
+              )
+            }
+            style={styles.previewArrow}
+          >
+            <Text style={styles.previewArrowText}>{"\u25C0"}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => setPreviewMode(false)}
+            style={styles.previewLabel}
+          >
+            <Text style={styles.previewTitle}>
+              {SCENARIOS[previewIndex]?.name}
+            </Text>
+            <Text style={styles.previewCount}>
+              {previewIndex + 1} / {SCENARIOS.length} — tap to exit
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() =>
+              setPreviewIndex((i) =>
+                i < SCENARIOS.length - 1 ? i + 1 : 0,
+              )
+            }
+            style={styles.previewArrow}
+          >
+            <Text style={styles.previewArrowText}>{"\u25B6"}</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </SafeAreaView>
   );
 }
@@ -509,64 +516,54 @@ const styles = StyleSheet.create({
   timelines: {
     width: "100%",
     maxWidth: 320,
-    gap: 8,
+    gap: 6,
     marginTop: 4,
   },
   timeline: {
-    borderRadius: 12,
-    borderWidth: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
+    paddingVertical: 2,
   },
-  timelineWinner: {
+  timelineWinner: {},
+  timelineDimmed: {
+    opacity: 0.55,
+  },
+  timelineBoxes: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  timelineBox: {
+    flex: 1,
+    alignItems: "center",
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 2,
+  },
+  boxWinner: {
     backgroundColor: "#ffffff",
     borderColor: "#dce1e6",
   },
-  timelineDimmed: {
+  boxDimmed: {
     backgroundColor: "#f4f2ee",
     borderColor: "#e4e0da",
-    opacity: 0.7,
   },
-  timelineHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginBottom: 8,
-  },
-  timelineDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-  },
-  timelineRoute: {
+  timelineArrow: {
     fontSize: 16,
-    fontWeight: "800",
-    color: "#1f2a35",
-    flex: 1,
+    color: "#b0b8c1",
   },
-  timelineTotal: {
-    fontSize: 14,
-    fontWeight: "700",
+  boxLabel: {
+    fontSize: 12,
     color: "#667788",
+    fontWeight: "600",
   },
-  timelineSteps: {
-    gap: 4,
-  },
-  timelineStep: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  stepLabel: {
-    fontSize: 14,
-    color: "#667788",
-  },
-  stepTime: {
+  boxTime: {
     fontSize: 15,
     color: "#667788",
     fontVariant: ["tabular-nums"],
   },
-  stepTimeBold: {
+  boxTimeBold: {
     fontWeight: "700",
     color: "#194f76",
   },
@@ -623,34 +620,29 @@ const styles = StyleSheet.create({
   previewBanner: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#194f76",
-    borderRadius: 10,
-    paddingVertical: 8,
+    paddingVertical: 6,
     paddingHorizontal: 4,
-    marginBottom: 12,
-    width: "100%",
-    maxWidth: 320,
   },
   previewArrow: {
     paddingHorizontal: 14,
     paddingVertical: 4,
   },
   previewArrowText: {
-    fontSize: 18,
-    color: "#ffffff",
+    fontSize: 16,
+    color: "rgba(0,0,0,0.25)",
   },
   previewLabel: {
     flex: 1,
     alignItems: "center",
   },
   previewTitle: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#ffffff",
+    fontSize: 13,
+    fontWeight: "600",
+    color: "rgba(0,0,0,0.25)",
   },
   previewCount: {
-    fontSize: 12,
-    color: "#a0bdd4",
+    fontSize: 11,
+    color: "rgba(0,0,0,0.18)",
   },
   previewToggle: {
     backgroundColor: "#194f76",

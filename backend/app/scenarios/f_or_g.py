@@ -73,6 +73,7 @@ class FOrGScenario:
         self._ac_hoyt_stop_id = ac_hoyt_default
 
         # Stashed per-request for debug_data to reference
+        self._last_ac_route: str | None = None
         self._last_ac_jay_ts: int | None = None
         self._last_ac_hoyt_ts: int | None = None
         self._last_rider_ready_f_ts: int = 0
@@ -127,13 +128,13 @@ class FOrGScenario:
 
     def _extract_ac_windows(
         self, snapshot: FeedSnapshot, now: int
-    ) -> list[tuple[int, int]]:
-        """Return (jay_ts, hoyt_ts) pairs for A/C trains in the right direction.
+    ) -> list[tuple[str, int, int]]:
+        """Return (route_id, jay_ts, hoyt_ts) tuples for A/C trains in the right direction.
 
         Outbound (southbound A/C): jay first, hoyt second → hoyt_ts >= jay_ts.
         Inbound (northbound A/C): hoyt first, jay second → jay_ts >= hoyt_ts.
         """
-        windows: list[tuple[int, int]] = []
+        windows: list[tuple[str, int, int]] = []
         for tu in snapshot.trip_updates:
             if tu.route_id not in {"A", "C"}:
                 continue
@@ -149,13 +150,13 @@ class FOrGScenario:
             if self._first_stop_is_jay:
                 # Outbound: jay first, then hoyt
                 if hoyt_ts >= jay_ts and jay_ts >= now:
-                    windows.append((jay_ts, hoyt_ts))
+                    windows.append((tu.route_id, jay_ts, hoyt_ts))
             else:
                 # Inbound: hoyt first, then jay
                 if jay_ts >= hoyt_ts and hoyt_ts >= now:
-                    windows.append((jay_ts, hoyt_ts))
+                    windows.append((tu.route_id, jay_ts, hoyt_ts))
         # Sort by the first stop's arrival time
-        sort_key = 0 if self._first_stop_is_jay else 1
+        sort_key = 1 if self._first_stop_is_jay else 2
         return sorted(windows, key=lambda p: p[sort_key])
 
     def extract_candidates(
@@ -164,8 +165,9 @@ class FOrGScenario:
         predictions = self._extract_predictions(snapshot, now)
         ac_windows = self._extract_ac_windows(snapshot, now)
         ac_window = ac_windows[0] if ac_windows else None
-        ac_jay_ts = ac_window[0] if ac_window else None
-        ac_hoyt_ts = ac_window[1] if ac_window else None
+        ac_route = ac_window[0] if ac_window else None
+        ac_jay_ts = ac_window[1] if ac_window else None
+        ac_hoyt_ts = ac_window[2] if ac_window else None
 
         rider_ready_f_ts = (
             ac_jay_ts + self.TRANSFER_OVERHEAD["F"]
@@ -179,6 +181,7 @@ class FOrGScenario:
         )
 
         # Stash for debug_data
+        self._last_ac_route = ac_route
         self._last_ac_jay_ts = ac_jay_ts
         self._last_ac_hoyt_ts = ac_hoyt_ts
         self._last_rider_ready_f_ts = rider_ready_f_ts
@@ -271,6 +274,7 @@ class FOrGScenario:
         return {
             "etaF": f_cand.eta_seconds,
             "etaG": g_cand.eta_seconds,
+            "acRoute": self._last_ac_route,
         }
 
     def _candidate_debug(
@@ -311,6 +315,7 @@ class FOrGScenario:
                 "G": self._candidate_debug(g_cand, self._last_rider_ready_g_ts),
             },
             "acReference": {
+                "route": self._last_ac_route,
                 "jayTs": self._last_ac_jay_ts,
                 "hoytTs": self._last_ac_hoyt_ts,
             },
