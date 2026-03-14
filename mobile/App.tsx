@@ -1,4 +1,6 @@
 import { StatusBar } from "expo-status-bar";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Location from "expo-location";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -12,8 +14,8 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import { SCENARIOS, ON_THE_F_SCENARIOS } from "./scenarios";
-import type { MockOnTheFScenario } from "./scenarios";
+import { SCENARIOS, ON_THE_F_SCENARIOS, COMPASS_SCENARIOS } from "./scenarios";
+import type { MockOnTheFScenario, MockCompassScenario } from "./scenarios";
 
 type UrgencyState = "NORMAL" | "HURRY";
 type RecommendationReason =
@@ -66,7 +68,7 @@ type FullResponse = {
   onTheF: OnTheFResponse;
 };
 
-type AppMode = "outbound" | "inbound" | "onTheF";
+type AppMode = "outbound" | "inbound" | "onTheF" | "compass";
 
 type RouteCandidateDebug = {
   switchStopId?: string | null;
@@ -92,6 +94,7 @@ const MODE_LABELS: Record<AppMode, string> = {
   outbound: "F or G \u2192 Carroll (Jay outbound)",
   inbound: "F or G \u2192 Carroll (Hoyt inbound)",
   onTheF: "F to Carroll",
+  compass: "East Broadway Up or Down",
 };
 
 type NavLine = {
@@ -117,6 +120,7 @@ const NAV_LINES: NavLine[] = [
     color: ROUTE_COLORS.F,
     scenarios: [
       { mode: "onTheF", label: "F to Carroll" },
+      { mode: "compass", label: "East Broadway Up or Down" },
     ],
   },
 ];
@@ -311,6 +315,204 @@ function DiamondBullet({
   );
 }
 
+// East Broadway track bearings (degrees from true north)
+const BROOKLYN_BEARING = 165; // SSE
+const QUEENS_BEARING = 345; // NNW
+const PLATFORM_TILT = 20; // visual tilt for the platform drawing
+
+function useCompassHeading(): number | null {
+  const [heading, setHeading] = useState<number | null>(null);
+
+  useEffect(() => {
+    let sub: Location.LocationSubscription | null = null;
+
+    (async () => {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") return;
+
+      sub = await Location.watchHeadingAsync((data) => {
+        if (data.trueHeading >= 0) {
+          setHeading(data.trueHeading);
+        } else if (data.magHeading >= 0) {
+          setHeading(data.magHeading);
+        }
+      });
+    })();
+
+    return () => {
+      sub?.remove();
+    };
+  }, []);
+
+  return heading;
+}
+
+function angleDiff(a: number, b: number): number {
+  let d = ((a - b + 180) % 360) - 180;
+  if (d < -180) d += 360;
+  return d;
+}
+
+function CompassView({ simulatedHeading }: { simulatedHeading?: number | null }) {
+  const s = useScale();
+  const liveHeading = useCompassHeading();
+  const heading = simulatedHeading !== undefined ? simulatedHeading : liveHeading;
+  const { width } = useWindowDimensions();
+
+  // Only register a direction when within 30° of perpendicular to a track
+  // Perpendicular to Brooklyn track (165°) = 75° and 255°
+  // Perpendicular to Queens track (345°) = 75° and 255° (same axes)
+  // So: pointing ~75° (±30°) = Brooklyn side, pointing ~255° (±30°) = Queens side
+  const PERP_BROOKLYN = (BROOKLYN_BEARING + 90) % 360; // 255°
+  const PERP_QUEENS = (QUEENS_BEARING + 90) % 360; // 75°
+  const toPerp1 = heading !== null ? Math.abs(angleDiff(heading, PERP_BROOKLYN)) : 180;
+  const toPerp2 = heading !== null ? Math.abs(angleDiff(heading, PERP_QUEENS)) : 180;
+  const THRESHOLD = 40;
+  const direction =
+    heading === null
+      ? null
+      : toPerp1 <= THRESHOLD
+        ? "Brooklyn"
+        : toPerp2 <= THRESHOLD
+          ? "Queens"
+          : null;
+
+  // Platform drawing dimensions
+  const platformLen = width * 0.7 * s;
+  const platformGap = 24 * s;
+  const trackWidth = 3 * s;
+
+  // Arrow rotation relative to the platform drawing.
+  // The platform container is rotated -PLATFORM_TILT degrees, so inside it:
+  //   0° CSS rotation = pointing right (along tracks toward Brooklyn end)
+  //   90° CSS rotation = pointing down
+  // We want heading mapped so that:
+  //   PERP_BROOKLYN (255°) → arrow points down (90° CSS) toward Brooklyn track
+  //   PERP_QUEENS (75°) → arrow points up (-90° CSS) toward Queens track
+  // Formula: CSS rotation = heading - BROOKLYN_BEARING (165°)
+  //   At 255°: 255 - 165 = 90° → down ✓
+  //   At 75°: 75 - 165 = -90° → up ✓
+  //   At 165°: 0° → right (along track) ✓
+  const arrowRotation = heading !== null
+    ? heading - BROOKLYN_BEARING
+    : 0;
+
+  return (
+    <View style={styles.centerBlock}>
+      <View
+        style={[
+          styles.compassPlatform,
+          {
+            width: platformLen + 60,
+            height: platformLen + 60,
+            transform: [{ rotate: `${-PLATFORM_TILT}deg` }],
+          },
+        ]}
+      >
+        {/* Queens bound label — outside top track, just above */}
+        <Text
+          style={[
+            styles.compassTrackLabel,
+            {
+              fontSize: 14 * s,
+              top: platformLen / 2 + 30 - platformGap / 2 - trackWidth - 20 * s,
+              left: 30,
+              width: platformLen,
+              color: direction === "Queens" ? "#23435c" : "#aab4be",
+              fontWeight: direction === "Queens" ? "800" : "400",
+            },
+          ]}
+        >
+          Queens bound
+        </Text>
+
+        {/* Top track (Queens bound) */}
+        <View
+          style={[
+            styles.compassTrack,
+            {
+              width: platformLen,
+              height: trackWidth,
+              top: platformLen / 2 + 30 - platformGap / 2,
+              left: 30,
+              backgroundColor: direction === "Queens" ? "#23435c" : "#c0c8d0",
+            },
+          ]}
+        />
+        {/* Bottom track (Brooklyn bound) */}
+        <View
+          style={[
+            styles.compassTrack,
+            {
+              width: platformLen,
+              height: trackWidth,
+              top: platformLen / 2 + 30 + platformGap / 2,
+              left: 30,
+              backgroundColor: direction === "Brooklyn" ? "#23435c" : "#c0c8d0",
+            },
+          ]}
+        />
+
+        {/* Compass arrow — centered between tracks, rotates with heading */}
+        {heading !== null && (
+          <View
+            style={[
+              styles.compassArrowContainer,
+              {
+                top: platformLen / 2 + 30 - 16 * s,
+                left: 30 + platformLen / 2 - 16 * s,
+                width: 32 * s,
+                height: 32 * s,
+                transform: [{ rotate: `${arrowRotation}deg` }],
+              },
+            ]}
+          >
+            <Text
+              style={[
+                styles.compassArrowText,
+                {
+                  fontSize: 28 * s,
+                  color: direction === "Brooklyn" ? ROUTE_COLORS.F : "#0039A6",
+                },
+              ]}
+            >
+              {"\u2192"}
+            </Text>
+          </View>
+        )}
+
+        {/* Brooklyn bound label — outside bottom track, just below */}
+        <Text
+          style={[
+            styles.compassTrackLabel,
+            {
+              fontSize: 14 * s,
+              top: platformLen / 2 + 30 + platformGap / 2 + trackWidth + 6 * s,
+              left: 30,
+              width: platformLen,
+              color: direction === "Brooklyn" ? "#23435c" : "#aab4be",
+              fontWeight: direction === "Brooklyn" ? "800" : "400",
+            },
+          ]}
+        >
+          Brooklyn bound
+        </Text>
+      </View>
+
+      {/* Direction result */}
+      <Text style={[styles.compassDirection, { fontSize: 22 * s }]}>
+        {heading === null
+          ? "Waiting for compass\u2026"
+          : direction === "Brooklyn"
+            ? "Brooklyn bound"
+            : direction === "Queens"
+              ? "Queens bound"
+              : "Point phone at platform"}
+      </Text>
+    </View>
+  );
+}
+
 function OnTheFTrainView({ train }: { train: OnTheFTrain }) {
   const s = useScale();
   if (train.isLocal) {
@@ -415,7 +617,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [fullResponse, setFullResponse] = useState<FullResponse | null>(null);
-  const [mode, setMode] = useState<AppMode>("outbound");
+  const [mode, setModeState] = useState<AppMode>("outbound");
   const [onTheFIndex, setOnTheFIndex] = useState(0);
   const [showDebug, setShowDebug] = useState(false);
   const [previewMode, setPreviewMode] = useState(false);
@@ -423,6 +625,20 @@ export default function App() {
   const [navOpen, setNavOpen] = useState(false);
   const [navLineId, setNavLineId] = useState<string | null>(null);
   const [touching, setTouching] = useState(false);
+
+  const setMode = useCallback((m: AppMode) => {
+    setModeState(m);
+    AsyncStorage.setItem("appMode", m);
+  }, []);
+
+  // Restore saved mode on launch
+  useEffect(() => {
+    AsyncStorage.getItem("appMode").then((saved) => {
+      if (saved && ["outbound", "inbound", "onTheF", "compass"].includes(saved)) {
+        setModeState(saved as AppMode);
+      }
+    });
+  }, []);
 
   const fetchRecommendation = useCallback(async () => {
     setLoading(true);
@@ -454,18 +670,26 @@ export default function App() {
 
   // Active recommendation for outbound/inbound modes
   const recommendation =
-    mode !== "onTheF" ? (fullResponse?.[mode] ?? null) : null;
+    mode === "outbound" || mode === "inbound"
+      ? (fullResponse?.[mode] ?? null)
+      : null;
 
   // F to Carroll data
   const onTheFData = fullResponse?.onTheF ?? null;
 
   // Preview mode scenarios — depends on current mode
   const isOnTheFPreview = previewMode && mode === "onTheF";
-  const previewScenarioList = mode === "onTheF" ? ON_THE_F_SCENARIOS : SCENARIOS;
+  const isCompassPreview = previewMode && mode === "compass";
+  const previewScenarioList =
+    mode === "onTheF"
+      ? ON_THE_F_SCENARIOS
+      : mode === "compass"
+        ? COMPASS_SCENARIOS
+        : SCENARIOS;
 
   // In preview mode for outbound/inbound, use mock data
   const displayData =
-    previewMode && mode !== "onTheF"
+    previewMode && (mode === "outbound" || mode === "inbound")
       ? (SCENARIOS[previewIndex]?.data as RecommendationResponse | undefined) ?? null
       : recommendation;
 
@@ -515,7 +739,7 @@ export default function App() {
           <RefreshControl refreshing={loading} onRefresh={fetchRecommendation} />
         }
       >
-        <Text style={styles.title}>{currentTime}</Text>
+        {mode !== "compass" && <Text style={styles.title}>{currentTime}</Text>}
 
         {/* Scenario label — tap to open navigation */}
         <TouchableOpacity
@@ -534,9 +758,8 @@ export default function App() {
             <Text style={styles.scenarioLabelHint}>tap to switch</Text>
           )}
         </TouchableOpacity>
-
         {/* Outbound / Inbound modes */}
-        {mode !== "onTheF" && (
+        {(mode === "outbound" || mode === "inbound") && (
           <>
             {!previewMode && loading && !recommendation ? (
               <View style={styles.centerBlock}>
@@ -761,6 +984,13 @@ export default function App() {
             ) : null}
           </>
         )}
+
+        {/* Compass mode */}
+        {mode === "compass" && (
+          isCompassPreview
+            ? <CompassView simulatedHeading={COMPASS_SCENARIOS[previewIndex]?.data.simulatedHeading} />
+            : <CompassView />
+        )}
       </ScrollView>
       {previewMode && (
         <View style={styles.previewBanner}>
@@ -922,6 +1152,40 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: "#8899aa",
     marginTop: 2,
+  },
+
+  // Compass
+  compassPlatform: {
+    position: "relative",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  compassTrack: {
+    position: "absolute",
+    borderRadius: 2,
+  },
+  compassTrackLabel: {
+    position: "absolute",
+    textAlign: "center",
+    letterSpacing: 1,
+  },
+  compassArrowContainer: {
+    position: "absolute",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  compassArrowText: {
+    fontWeight: "900",
+  },
+  compassInstruction: {
+    fontSize: 15,
+    color: "#1f2a35",
+    marginBottom: 12,
+  },
+  compassDirection: {
+    fontWeight: "800",
+    color: "#23435c",
+    marginTop: 8,
   },
 
   // Navigation overlay

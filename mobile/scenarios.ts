@@ -273,6 +273,22 @@ export const SCENARIOS: MockScenario[] = [
   },
 ];
 
+export type MockCompassScenario = {
+  name: string;
+  data: {
+    simulatedHeading: number | null;
+  };
+};
+
+export const COMPASS_SCENARIOS: MockCompassScenario[] = [
+  { name: "Brooklyn bound (165°)", data: { simulatedHeading: 165 } },
+  { name: "Queens bound (345°)", data: { simulatedHeading: 345 } },
+  { name: "Slightly off Brooklyn (140°)", data: { simulatedHeading: 140 } },
+  { name: "Slightly off Queens (10°)", data: { simulatedHeading: 10 } },
+  { name: "Perpendicular (75°)", data: { simulatedHeading: 75 } },
+  { name: "No compass data", data: { simulatedHeading: null } },
+];
+
 export const ON_THE_F_SCENARIOS: MockOnTheFScenario[] = [
   {
     name: "Local F — direct to Carroll",
