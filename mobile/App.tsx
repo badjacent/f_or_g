@@ -9,6 +9,7 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { SCENARIOS, ON_THE_F_SCENARIOS } from "./scenarios";
@@ -79,17 +80,46 @@ const API_BASE_URL =
   (__DEV__ ? "http://localhost:8000" : "https://forg.aionyourside.net");
 
 // Official MTA route colors
-const ROUTE_COLORS: Record<RecommendationResponse["recommendedRoute"], string> = {
+const ROUTE_COLORS: Record<string, string> = {
   F: "#FF6319",
   G: "#6CBE45",
+  A: "#0039A6",
+  C: "#0039A6",
   "?": "#808183",
 };
 
 const MODE_LABELS: Record<AppMode, string> = {
-  outbound: "\u2192 Brooklyn",
-  inbound: "\u2192 Manhattan",
+  outbound: "F or G \u2192 Brooklyn",
+  inbound: "F or G \u2192 Manhattan",
   onTheF: "On the F",
 };
+
+type NavLine = {
+  id: string;
+  letter: string;
+  color: string;
+  scenarios: { mode: AppMode; label: string }[];
+};
+
+const NAV_LINES: NavLine[] = [
+  {
+    id: "ac",
+    letter: "A",
+    color: ROUTE_COLORS.A,
+    scenarios: [
+      { mode: "outbound", label: "F or G \u2192 Brooklyn" },
+      { mode: "inbound", label: "F or G \u2192 Manhattan" },
+    ],
+  },
+  {
+    id: "f",
+    letter: "F",
+    color: ROUTE_COLORS.F,
+    scenarios: [
+      { mode: "onTheF", label: "On the F" },
+    ],
+  },
+];
 
 function toMinutes(seconds: number | null): string {
   if (seconds == null) return "\u2014";
@@ -150,6 +180,12 @@ function useCurrentTime(): string {
   return now;
 }
 
+// Scale factor relative to a 393pt (iPhone 15) baseline
+function useScale(): number {
+  const { width } = useWindowDimensions();
+  return Math.min(width / 393, 1);
+}
+
 function RouteTimeline({
   route,
   station,
@@ -205,14 +241,83 @@ function RouteTimeline({
   );
 }
 
+function Bullet({
+  letter,
+  color,
+  size = 1,
+}: {
+  letter: string;
+  color: string;
+  size?: number;
+}) {
+  const s = useScale();
+  const base = 180 * size * s;
+  return (
+    <View
+      style={[
+        styles.bullet,
+        {
+          backgroundColor: color,
+          width: base,
+          height: base,
+          borderRadius: base / 2,
+          borderWidth: Math.max(2, 4 * s),
+        },
+      ]}
+    >
+      <Text
+        style={[
+          styles.bulletLetter,
+          { fontSize: base * 0.67, lineHeight: base * 0.78 },
+        ]}
+      >
+        {letter}
+      </Text>
+    </View>
+  );
+}
+
+function DiamondBullet({
+  color,
+  size = 1,
+}: {
+  color: string;
+  size?: number;
+}) {
+  const s = useScale();
+  const base = 148 * size * s;
+  return (
+    <View
+      style={[
+        styles.diamondOuter,
+        {
+          backgroundColor: color,
+          width: base,
+          height: base,
+          borderRadius: base * 0.15,
+          borderWidth: Math.max(2, 3 * s),
+        },
+      ]}
+    >
+      <Text
+        style={[
+          styles.diamondLetter,
+          { fontSize: base * 0.49, lineHeight: base * 0.55 },
+        ]}
+      >
+        F
+      </Text>
+    </View>
+  );
+}
+
 function OnTheFTrainView({ train }: { train: OnTheFTrain }) {
+  const s = useScale();
   if (train.isLocal) {
     return (
       <View style={styles.centerBlock}>
         {/* Local F bullet */}
-        <View style={[styles.bullet, { backgroundColor: ROUTE_COLORS.F }]}>
-          <Text style={styles.bulletLetter}>F</Text>
-        </View>
+        <Bullet letter="F" color={ROUTE_COLORS.F} />
 
         <Text style={styles.summary}>
           {train.summaryText ?? `Carroll at ${toClock(train.carrollArrivalTs)}`}
@@ -229,9 +334,7 @@ function OnTheFTrainView({ train }: { train: OnTheFTrain }) {
   if (!transfer) {
     return (
       <View style={styles.centerBlock}>
-        <View style={[styles.bullet, { backgroundColor: ROUTE_COLORS["?"] }]}>
-          <Text style={styles.bulletLetter}>?</Text>
-        </View>
+        <Bullet letter="?" color={ROUTE_COLORS["?"]} />
         <Text style={styles.summary}>Express F {"\u2014"} no transfer data</Text>
       </View>
     );
@@ -256,16 +359,10 @@ function OnTheFTrainView({ train }: { train: OnTheFTrain }) {
       </View>
 
       {/* Hero bullet(s) */}
-      <View style={styles.diamondToCircle}>
-        <View style={[styles.diamondOuter, { backgroundColor: ROUTE_COLORS.F }]}>
-          <Text style={styles.diamondLetter}>F</Text>
-        </View>
-        <Text style={styles.diamondArrow}>{"\u2192"}</Text>
-        <View style={[styles.bulletSmall, { backgroundColor: routeColor }]}>
-          <Text style={styles.bulletLetterSmall}>
-            {transfer.recommendedRoute}
-          </Text>
-        </View>
+      <View style={[styles.diamondToCircle, { gap: 16 * s }]}>
+        <DiamondBullet color={ROUTE_COLORS.F} size={0.75} />
+        <Text style={[styles.diamondArrow, { fontSize: 32 * s }]}>{"\u2192"}</Text>
+        <Bullet letter={transfer.recommendedRoute} color={routeColor} size={0.75} />
       </View>
 
       {transfer.urgencyState === "HURRY" && (
@@ -323,6 +420,9 @@ export default function App() {
   const [showDebug, setShowDebug] = useState(false);
   const [previewMode, setPreviewMode] = useState(false);
   const [previewIndex, setPreviewIndex] = useState(0);
+  const [navOpen, setNavOpen] = useState(false);
+  const [navLineId, setNavLineId] = useState<string | null>(null);
+  const [touching, setTouching] = useState(false);
 
   const fetchRecommendation = useCallback(async () => {
     setLoading(true);
@@ -402,7 +502,12 @@ export default function App() {
   const currentTrain = onTheFTrains[onTheFIndex] ?? null;
 
   return (
-    <SafeAreaView style={styles.root}>
+    <SafeAreaView
+      style={styles.root}
+      onTouchStart={() => setTouching(true)}
+      onTouchEnd={() => setTouching(false)}
+      onTouchCancel={() => setTouching(false)}
+    >
       <StatusBar style="dark" />
       <ScrollView
         contentContainerStyle={styles.scrollContent}
@@ -412,33 +517,21 @@ export default function App() {
       >
         <Text style={styles.title}>{currentTime}</Text>
 
-        {/* Mode switcher — row of three pill buttons */}
-        <View style={styles.modeSwitcher}>
-          {(["outbound", "inbound", "onTheF"] as AppMode[]).map((m) => (
-            <TouchableOpacity
-              key={m}
-              onPress={() => {
-                setMode(m);
-                setPreviewIndex(0);
-              }}
-              style={[
-                styles.modePill,
-                mode === m ? styles.modePillActive : styles.modePillInactive,
-              ]}
-            >
-              <Text
-                style={[
-                  styles.modePillText,
-                  mode === m
-                    ? styles.modePillTextActive
-                    : styles.modePillTextInactive,
-                ]}
-              >
-                {MODE_LABELS[m]}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
+        {/* Scenario label — tap to open navigation */}
+        <TouchableOpacity
+          onPress={() => {
+            setNavOpen(true);
+            setNavLineId(null);
+          }}
+          style={styles.scenarioLabel}
+        >
+          <Text style={styles.scenarioLabelText}>
+            {MODE_LABELS[mode]}
+          </Text>
+          {touching && !navOpen && (
+            <Text style={styles.scenarioLabelHint}>tap to switch</Text>
+          )}
+        </TouchableOpacity>
 
         {/* Outbound / Inbound modes */}
         {mode !== "onTheF" && (
@@ -454,9 +547,7 @@ export default function App() {
                   onLongPress={() => setShowDebug((prev) => !prev)}
                   delayLongPress={500}
                 >
-                  <View style={[styles.bullet, { backgroundColor: ROUTE_COLORS["?"] }]}>
-                    <Text style={styles.bulletLetter}>?</Text>
-                  </View>
+                  <Bullet letter="?" color={ROUTE_COLORS["?"]} />
                 </Pressable>
                 <Text style={styles.summary}>No signal</Text>
                 <Text style={styles.subtle}>{error}</Text>
@@ -483,11 +574,7 @@ export default function App() {
                   onLongPress={() => setShowDebug((prev) => !prev)}
                   delayLongPress={500}
                 >
-                  <View style={[styles.bullet, { backgroundColor: routeColor }]}>
-                    <Text style={styles.bulletLetter}>
-                      {displayData.recommendedRoute}
-                    </Text>
-                  </View>
+                  <Bullet letter={displayData.recommendedRoute} color={routeColor} />
                 </Pressable>
 
                 {/* Hurry callout */}
@@ -577,9 +664,7 @@ export default function App() {
                   onLongPress={() => setShowDebug((prev) => !prev)}
                   delayLongPress={500}
                 >
-                  <View style={[styles.bullet, { backgroundColor: ROUTE_COLORS["?"] }]}>
-                    <Text style={styles.bulletLetter}>?</Text>
-                  </View>
+                  <Bullet letter="?" color={ROUTE_COLORS["?"]} />
                 </Pressable>
                 <Text style={styles.summary}>No signal</Text>
                 <Text style={styles.subtle}>{error}</Text>
@@ -601,9 +686,7 @@ export default function App() {
               </View>
             ) : onTheFTrains.length === 0 ? (
               <View style={styles.centerBlock}>
-                <View style={[styles.bullet, { backgroundColor: ROUTE_COLORS["?"] }]}>
-                  <Text style={styles.bulletLetter}>?</Text>
-                </View>
+                <Bullet letter="?" color={ROUTE_COLORS["?"]} />
                 <Text style={styles.summary}>No F trains found</Text>
                 <Text style={styles.subtle}>Pull to refresh</Text>
               </View>
@@ -712,6 +795,142 @@ export default function App() {
           </TouchableOpacity>
         </View>
       )}
+      {/* Navigation overlay */}
+      {navOpen && (() => {
+        const currentLine = NAV_LINES.find((l) =>
+          l.scenarios.some((s) => s.mode === mode),
+        );
+        const selectedLine = navLineId
+          ? NAV_LINES.find((l) => l.id === navLineId)
+          : null;
+
+        return (
+          <View style={styles.navOverlay}>
+            <SafeAreaView style={styles.navContainer}>
+              {navLineId === null ? (
+                /* Level 1: line bullets + current line scenarios */
+                <View style={styles.navContent}>
+                  <ScrollView
+                    contentContainerStyle={styles.navLineGrid}
+                    style={styles.navLineScroll}
+                  >
+                    {/* Back as first bullet */}
+                    <TouchableOpacity onPress={() => setNavOpen(false)}>
+                      <View style={[styles.navBullet, { backgroundColor: ROUTE_COLORS["?"] }]}>
+                        <Text style={styles.navBackArrow}>{"\u2190"}</Text>
+                      </View>
+                    </TouchableOpacity>
+                    {NAV_LINES.map((line) => (
+                      <TouchableOpacity
+                        key={line.id}
+                        onPress={() => {
+                          if (line.scenarios.length === 1) {
+                            setMode(line.scenarios[0].mode);
+                            setPreviewIndex(0);
+                            setNavOpen(false);
+                          } else {
+                            setNavLineId(line.id);
+                          }
+                        }}
+                      >
+                        <View style={[styles.navBullet, { backgroundColor: line.color }]}>
+                          <Text style={styles.navBulletLetter}>{line.letter}</Text>
+                        </View>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                  {/* Divider + current line's scenarios */}
+                  {currentLine && currentLine.scenarios.length > 1 && (
+                    <>
+                    <View style={styles.navDivider} />
+                    <View style={styles.navCurrentScenarios}>
+                      <View style={styles.navSectionHeader}>
+                        <View style={[styles.navBullet, { backgroundColor: currentLine.color }]}>
+                          <Text style={styles.navBulletLetter}>{currentLine.letter}</Text>
+                        </View>
+                      </View>
+                      {currentLine.scenarios.map((scenario) => (
+                        <TouchableOpacity
+                          key={scenario.mode}
+                          onPress={() => {
+                            setMode(scenario.mode);
+                            setPreviewIndex(0);
+                            setNavOpen(false);
+                          }}
+                          style={[
+                            styles.navScenarioButton,
+                            mode === scenario.mode && styles.navScenarioButtonActive,
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.navScenarioText,
+                              mode === scenario.mode && styles.navScenarioTextActive,
+                            ]}
+                          >
+                            {scenario.label}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                    </>
+                  )}
+                </View>
+              ) : (
+                /* Level 2: scenarios for selected line */
+                <View style={styles.navContent}>
+                  {/* Line bullet at top */}
+                  {selectedLine && (
+                    <View style={styles.navLineRow}>
+                      <View style={[styles.navBullet, { backgroundColor: selectedLine.color }]}>
+                        <Text style={styles.navBulletLetter}>{selectedLine.letter}</Text>
+                      </View>
+                    </View>
+                  )}
+                  <ScrollView style={styles.navScroll}>
+                    {/* Back as first option */}
+                    <TouchableOpacity
+                      onPress={() => {
+                        setNavOpen(false);
+                        setNavLineId(null);
+                      }}
+                      style={styles.navScenarioButton}
+                    >
+                      <Text style={styles.navScenarioBackText}>{"\u2190"}</Text>
+                    </TouchableOpacity>
+                    {selectedLine?.scenarios.map(
+                      (scenario) => (
+                        <TouchableOpacity
+                          key={scenario.mode}
+                          onPress={() => {
+                            setMode(scenario.mode);
+                            setPreviewIndex(0);
+                            setNavOpen(false);
+                            setNavLineId(null);
+                          }}
+                          style={[
+                            styles.navScenarioButton,
+                            mode === scenario.mode && styles.navScenarioButtonActive,
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.navScenarioText,
+                              mode === scenario.mode && styles.navScenarioTextActive,
+                            ]}
+                          >
+                            {scenario.label}
+                          </Text>
+                        </TouchableOpacity>
+                      ),
+                    )}
+                  </ScrollView>
+                </View>
+              )}
+            </SafeAreaView>
+          </View>
+        );
+      })()}
     </SafeAreaView>
   );
 }
@@ -744,44 +963,147 @@ const styles = StyleSheet.create({
     gap: 12,
   },
 
-  // Mode switcher
-  modeSwitcher: {
-    flexDirection: "row",
-    gap: 8,
+  // Scenario label (replaces mode switcher)
+  scenarioLabel: {
+    alignItems: "center",
     marginBottom: 16,
+    paddingVertical: 6,
+    paddingHorizontal: 16,
   },
-  modePill: {
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-  },
-  modePillActive: {
-    backgroundColor: "#23435c",
-  },
-  modePillInactive: {
-    backgroundColor: "rgba(35, 67, 92, 0.15)",
-  },
-  modePillText: {
-    fontSize: 14,
+  scenarioLabelText: {
+    fontSize: 16,
     fontWeight: "700",
+    color: "#23435c",
     letterSpacing: 0.5,
   },
-  modePillTextActive: {
-    color: "#ffffff",
-  },
-  modePillTextInactive: {
-    color: "#23435c",
-    opacity: 0.6,
+  scenarioLabelHint: {
+    fontSize: 11,
+    color: "#8899aa",
+    marginTop: 2,
   },
 
-  // MTA-style bullet
-  bullet: {
-    width: 180,
-    height: 180,
-    borderRadius: 90,
+  // Navigation overlay
+  navOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "#f8f4ec",
+    zIndex: 10,
+  },
+  navContainer: {
+    flex: 1,
+    justifyContent: "center",
+    paddingHorizontal: 24,
+  },
+  navContent: {
+    flex: 1,
+    justifyContent: "center",
+    padding: 20,
+    gap: 12,
+  },
+  navLineRow: {
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 20,
+    paddingVertical: 8,
+  },
+  navLineGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "center",
+    gap: 16,
+    paddingVertical: 8,
+  },
+  navLineScroll: {
+    maxHeight: 200,
+  },
+  navBackArrow: {
+    fontSize: 34,
+    lineHeight: 40,
+    fontWeight: "900",
+    color: "#ffffff",
+  },
+  navBullet: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 4,
+    borderWidth: 3,
+    borderColor: "#ffffff",
+  },
+  navBulletLetter: {
+    fontSize: 38,
+    lineHeight: 44,
+    fontWeight: "700",
+    fontFamily: "Helvetica-Bold",
+    color: "#ffffff",
+  },
+  navDivider: {
+    height: 1,
+    backgroundColor: "#d0ccc4",
+    width: "80%",
+    alignSelf: "center",
+    marginVertical: 4,
+  },
+  navSectionHeader: {
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  navBulletSmall: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "#ffffff",
+  },
+  navBulletSmallLetter: {
+    fontSize: 22,
+    lineHeight: 26,
+    fontWeight: "700",
+    fontFamily: "Helvetica-Bold",
+    color: "#ffffff",
+  },
+  navCurrentScenarios: {
+    gap: 8,
+    marginTop: 4,
+  },
+  navScroll: {
+    maxHeight: 300,
+  },
+  navScenarioButton: {
+    backgroundColor: "#ffffff",
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 18,
+    marginBottom: 8,
+  },
+  navScenarioButtonActive: {
+    backgroundColor: "#23435c",
+  },
+  navScenarioText: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#1f2a35",
+  },
+  navScenarioTextActive: {
+    color: "#ffffff",
+  },
+  navScenarioBackText: {
+    fontSize: 22,
+    fontWeight: "900",
+    color: "#8899aa",
+    textAlign: "center",
+  },
+
+  // MTA-style bullet (base styles — size set inline by Bullet component)
+  bullet: {
+    alignItems: "center",
+    justifyContent: "center",
     borderColor: "#ffffff",
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
@@ -790,8 +1112,6 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   bulletLetter: {
-    fontSize: 120,
-    lineHeight: 140,
     fontWeight: "700",
     fontFamily: "Helvetica-Bold",
     color: "#ffffff",
@@ -822,7 +1142,6 @@ const styles = StyleSheet.create({
   // Route timelines
   timelines: {
     width: "100%",
-    maxWidth: 320,
     gap: 6,
     marginTop: 4,
   },
@@ -882,13 +1201,9 @@ const styles = StyleSheet.create({
     gap: 16,
   },
   diamondOuter: {
-    width: 111,
-    height: 111,
-    borderRadius: 17,
     transform: [{ rotate: "45deg" }],
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 3,
     borderColor: "#ffffff",
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
@@ -897,38 +1212,14 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   diamondLetter: {
-    fontSize: 72,
-    lineHeight: 81,
     fontWeight: "700",
     fontFamily: "Helvetica-Bold",
     color: "#ffffff",
     transform: [{ rotate: "-45deg" }],
   },
   diamondArrow: {
-    fontSize: 32,
     color: "#1f2a35",
     fontWeight: "700",
-  },
-  bulletSmall: {
-    width: 135,
-    height: 135,
-    borderRadius: 68,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 3,
-    borderColor: "#ffffff",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.18,
-    shadowRadius: 6,
-    elevation: 4,
-  },
-  bulletLetterSmall: {
-    fontSize: 90,
-    lineHeight: 99,
-    fontWeight: "700",
-    fontFamily: "Helvetica-Bold",
-    color: "#ffffff",
   },
 
   // Express banner
